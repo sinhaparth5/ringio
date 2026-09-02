@@ -37,6 +37,18 @@ namespace ringio {
 // write, not a syscall, as long as that thread hasn't gone idle (see
 // sq_thread_idle_ms below).
 //
+// That polling thread busy-spins the whole time it's awake, so it costs a
+// full CPU core by itself -- one engine is really a two-core commitment
+// (one for the poller, one for whatever thread feeds it), not one. An
+// engine constructed with `attach_to` skips spawning its own poller and
+// shares the one belonging to `attach_to` instead (IORING_SETUP_ATTACH_WQ):
+// each attached engine still gets its own SQ/CQ ring, but the kernel
+// services all of them from a single polling thread, so N engines sharing
+// one poller cost 1 + N cores instead of 2*N. See
+// experiments/sqpoll_core_budget.cpp for the numbers that led here: on a
+// 4-vCPU box, independent rings collapse past 2 concurrent engines, while
+// sharing one poller keeps scaling past 8.
+//
 // SqpollEngine itself holds no request queue — drain_and_submit() takes
 // whichever SpscRing<IoRequest, N> or MpmcRing<IoRequest, N> the caller is
 // feeding, so a single engine can be fed by either, depending on whether
@@ -46,15 +58,27 @@ class SqpollEngine {
   // `entries` sizes the underlying SQ/CQ rings (must be a power of two).
   // `sq_thread_idle_ms` is how long the kernel polling thread spins with no
   // work before sleeping; drain_and_submit() after that point costs one
-  // wake-up syscall instead of zero, same as vanilla SQPOLL.
+  // wake-up syscall instead of zero, same as vanilla SQPOLL. Ignored when
+  // `attach_to` is non-null -- the shared poller keeps whatever idle
+  // timeout the engine it belongs to was created with.
+  //
+  // `attach_to`, when non-null, must outlive this engine: this engine's
+  // poller is `attach_to`'s, so `attach_to`'s ring has to still exist for
+  // this one to have anything to submit through.
   //
   // Throws std::system_error if the kernel refuses to create the ring —
-  // e.g. RLIMIT_MEMLOCK too low for the requested ring size, or SQPOLL
-  // unsupported/disallowed in this environment.
-  explicit SqpollEngine(unsigned entries, unsigned sq_thread_idle_ms = 1000) {
+  // e.g. RLIMIT_MEMLOCK too low for the requested ring size, SQPOLL
+  // unsupported/disallowed in this environment, or (for an attached engine)
+  // the kernel rejecting the shared-poller attachment.
+  explicit SqpollEngine(unsigned entries, unsigned sq_thread_idle_ms = 1000,
+                         const SqpollEngine* attach_to = nullptr) {
     ::io_uring_params params{};
     params.flags = IORING_SETUP_SQPOLL;
     params.sq_thread_idle = sq_thread_idle_ms;
+    if (attach_to != nullptr) {
+      params.flags |= IORING_SETUP_ATTACH_WQ;
+      params.wq_fd = static_cast<unsigned>(attach_to->native_handle()->ring_fd);
+    }
     if (const int ret = ::io_uring_queue_init_params(entries, &ring_, &params); ret < 0) {
       throw std::system_error(-ret, std::generic_category(),
                                "SqpollEngine: io_uring_queue_init_params failed");
@@ -173,6 +197,7 @@ class SqpollEngine {
   }
 
   ::io_uring* native_handle() noexcept { return &ring_; }
+  const ::io_uring* native_handle() const noexcept { return &ring_; }
 
  private:
   ::io_uring ring_{};

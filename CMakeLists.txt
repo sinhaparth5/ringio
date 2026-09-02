@@ -14,6 +14,10 @@ option(RINGIO_BUILD_BENCHMARKS "Build the ringio benchmark suite" ON)
 option(RINGIO_MARCH_NATIVE "Compile with -march=native in Release builds" ON)
 option(RINGIO_ENABLE_TSAN "Build with ThreadSanitizer (-fsanitize=thread)" OFF)
 option(RINGIO_ENABLE_ASAN "Build with AddressSanitizer (-fsanitize=address)" OFF)
+option(RINGIO_BUILD_EXPERIMENTS
+  "Build exploratory microarchitecture experiments under experiments/ -- \
+throwaway investigation code, not part of the library or its CI-tracked \
+results" OFF)
 
 # ringio itself is header-only.
 add_library(ringio INTERFACE)
@@ -79,4 +83,11 @@ endif()
 
 if(RINGIO_BUILD_BENCHMARKS)
   add_subdirectory(benchmarks)
+endif()
+
+if(RINGIO_BUILD_EXPERIMENTS)
+  if(NOT (LIBURING_INCLUDE_DIR AND LIBURING_LIBRARY))
+    message(FATAL_ERROR "ringio: RINGIO_BUILD_EXPERIMENTS needs liburing-dev")
+  endif()
+  add_subdirectory(experiments)
 endif()

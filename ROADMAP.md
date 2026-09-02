@@ -65,6 +65,58 @@ behind each item. Check items off as they land.
 - [x] AddressSanitizer verification (`-fsanitize=address`) — no memory leaks — `RINGIO_ENABLE_ASAN`
       CMake option
 
+### Follow-up: SQPOLL core-budget investigation
+
+Re-running Phase 5's benchmarks on real NVMe (a GCE `n2-standard-4` with a local NVMe SSD, not the
+original run's persistent-disk VM) showed `SqpollEngine` still trailing every baseline and still
+collapsing past 2 threads on 4 vCPUs. The cause: each `SqpollEngine`'s SQPOLL kernel thread
+busy-polls continuously, so it costs a full core by itself — a ring is really a two-core
+commitment, not one, and nothing in the design accounted for that.
+
+`experiments/sqpoll_core_budget.cpp` tested three fixes against raw liburing:
+`IORING_SETUP_ATTACH_WQ` (sharing one poller across rings), `sq_thread_idle` tuning, and
+core-pinning the app thread and poller separately. Sharing the poller was the one that worked —
+independent rings collapsed from 157K IOPS (2 threads) to 71K (8 threads); threads sharing one
+poller climbed to 248K at 8 and hadn't plateaued.
+
+- [x] `SqpollEngine` gets a third constructor parameter, `attach_to`, defaulted to `nullptr` so
+      every existing call site is unaffected — when set, the new engine shares `attach_to`'s
+      kernel poller (`IORING_SETUP_ATTACH_WQ`) instead of spawning its own
+- [x] `BM_SqpollSharedPollerIops` benchmarks it: one master engine plus N-1 attached followers,
+      built before any thread starts (doesn't use `->Threads(N)`, since that ordering can't be
+      guaranteed across per-thread setup — see the function's comment)
+
+The first version of this benchmark undersold the fix. Its worker threads called
+`harvest_completions()` in a flat busy-spin loop, so every application thread burned a full core
+on top of the one the shared poller now takes, which reintroduced a core-budget ceiling from the
+application side and made throughput collapse past 2 threads even though the kernel mechanism
+doesn't.
+
+- [x] `WaitForCompletion` (in `benchmarks/iops_throughput_benchmark.cpp`) replaces the flat spin
+      with a three-tier backoff — fast retries, then bounded pause-instruction spinning, then a
+      scheduler yield — so a waiting thread stops denying the scheduler cycles it needs to run
+      the poller. Both `BM_SqpollIops` and `BM_SqpollSharedPollerIops` use it.
+
+With backoff, `BM_SqpollSharedPollerIops` beats the independent-ring `BM_SqpollIops` at every
+thread count above 1, by a wide margin, on the same `n2-standard-4` box:
+
+| threads | independent (`BM_SqpollIops`) | shared poller (`BM_SqpollSharedPollerIops`) |
+|---|---|---|
+| 1 | 194K | 207K |
+| 2 | 205K | 417K |
+| 4 | 1.8K | 163K |
+| 8 | 1.6K | 112K |
+| 16 | 1.1K | 63K |
+| 32 | 1.2K | 31K |
+
+Backoff doesn't create CPU capacity that isn't there, and the shared-poller numbers still peak at
+2 threads and decline afterward: 4 vCPUs means 1 core for the poller and 3 for application
+threads, so anything past that is already oversubscribed. What backoff fixes is the collapse
+being disproportionate to that oversubscription — before it, 8 threads on the shared poller fell
+to 46K IOPS; after it, the same run holds 112K. The independent-ring backend, with no shared
+poller to protect, still falls off a cliff past 2 threads regardless of backoff. That's expected:
+it still pays the full 2-cores-per-ring cost this investigation exists to fix.
+
 ## Phase 6 — Paper Writing & Publication
 
 - [ ] Manuscript: methodology, kernel-bypass design, empirical evaluation
