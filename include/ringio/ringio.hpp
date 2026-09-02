@@ -5,3 +5,4 @@
 // pool, submission ring, completion engine, ...).
 
 #include "ringio/detail/cache_line.hpp"
+#include "ringio/detail/buffer_pool.hpp"

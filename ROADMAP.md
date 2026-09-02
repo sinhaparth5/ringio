@@ -19,10 +19,12 @@ behind each item. Check items off as they land.
 
 ## Phase 2 — Zero-Copy Page Buffer Pool
 
-- [ ] Page-aligned DMA buffer pool allocation (`posix_memalign` / `aligned_alloc`, 4096-byte
-      boundaries matching NVMe sectors)
-- [ ] Memory page locking (`mlock()`) to prevent page-swapping stalls
-- [ ] Pre-registered buffer mapping (`io_uring_register_buffers()`)
+- [x] Page-aligned DMA buffer pool allocation (`posix_memalign`, 4096-byte boundaries matching
+      NVMe sectors) — `ringio::BufferPool`
+- [x] Memory page locking (`mlock()`) to prevent page-swapping stalls
+- [x] Pre-registered buffer mapping (`io_uring_register_buffers()`) — `BufferPool::register_with`
+- [x] Lock-free zero-allocation acquire/release (Treiber stack with tagged ABA-safe head), so
+      checking a buffer in or out never allocates once the pool is built
 
 ## Phase 3 — Kernel-Bypass Submission Engine
 

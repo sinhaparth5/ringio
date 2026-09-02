@@ -8,10 +8,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(googletest)
 
+find_package(Threads REQUIRED)
+
 add_executable(ringio_tests
   detail/cache_line_test.cpp
+  detail/buffer_pool_test.cpp
 )
-target_link_libraries(ringio_tests PRIVATE ringio::ringio GTest::gtest_main)
+target_link_libraries(ringio_tests PRIVATE ringio::ringio GTest::gtest_main Threads::Threads)
 
 include(GoogleTest)
 gtest_discover_tests(ringio_tests)
