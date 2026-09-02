@@ -22,19 +22,22 @@ target_include_directories(ringio INTERFACE
 )
 target_compile_features(ringio INTERFACE cxx_std_20)
 
-# liburing is only needed once Phase 3 starts issuing io_uring calls, but we
-# wire the detection up now so later phases don't need to touch this file.
+# liburing is only needed by the code paths that call into it directly
+# (buffer/file registration, submission), but we wire the detection up once
+# so later phases don't need to touch this file. Headers that need it guard
+# the include and any liburing-calling members behind RINGIO_HAVE_LIBURING.
 find_path(LIBURING_INCLUDE_DIR liburing.h)
 find_library(LIBURING_LIBRARY uring)
 if(LIBURING_INCLUDE_DIR AND LIBURING_LIBRARY)
   target_include_directories(ringio INTERFACE ${LIBURING_INCLUDE_DIR})
   target_link_libraries(ringio INTERFACE ${LIBURING_LIBRARY})
+  target_compile_definitions(ringio INTERFACE RINGIO_HAVE_LIBURING)
   message(STATUS "ringio: found liburing (${LIBURING_LIBRARY})")
 else()
   message(WARNING
-    "ringio: liburing not found. Code from Phase 3 onward needs it; install "
-    "with `sudo apt install liburing-dev` and re-run cmake. Phase 1/2 "
-    "targets are unaffected.")
+    "ringio: liburing not found. Buffer/file registration and submission "
+    "need it; install with `sudo apt install liburing-dev` and re-run "
+    "cmake. Everything else still builds without it.")
 endif()
 
 if(RINGIO_MARCH_NATIVE)

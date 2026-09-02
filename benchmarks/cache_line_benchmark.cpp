@@ -20,4 +20,6 @@ BENCHMARK(BM_CacheLinePaddedIncrement);
 
 }  // namespace
 
+// The sole main() for ringio_benchmarks — every other *_benchmark.cpp in
+// this directory only registers benchmarks, it doesn't define its own.
 BENCHMARK_MAIN();

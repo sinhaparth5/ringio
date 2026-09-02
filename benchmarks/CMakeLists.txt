@@ -12,5 +12,6 @@ FetchContent_MakeAvailable(benchmark)
 
 add_executable(ringio_benchmarks
   cache_line_benchmark.cpp
+  buffer_pool_benchmark.cpp
 )
 target_link_libraries(ringio_benchmarks PRIVATE ringio::ringio benchmark::benchmark_main)

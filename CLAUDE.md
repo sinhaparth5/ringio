@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Phase 1 (repo/build scaffolding) is done — see `ROADMAP.md` for what's checked off. Phases 2–6
-are not started. Treat `docs/ringio-theory.pdf` (motivation/design) and `docs/ringio-roadmap.pdf`
-(phased implementation plan) as the authoritative spec for anything not yet built; this file only
-tracks what already exists.
+Phases 1–2 (repo/build scaffolding, zero-copy page buffer pool) are done — see `ROADMAP.md` for
+what's checked off. Phases 3–6 are not started. Treat `docs/ringio-theory.pdf`
+(motivation/design) and `docs/ringio-roadmap.pdf` (phased implementation plan) as the
+authoritative spec for anything not yet built; this file only tracks what already exists.
 
 ## Building and testing
 
@@ -19,9 +19,11 @@ ctest --test-dir build --output-on-failure   # run the test suite
 ```
 
 GoogleTest and Google Benchmark are pulled in automatically via `FetchContent` (network access
-required on first configure). `liburing` is detected via `find_path`/`find_library`; if it's
-missing, configure prints a warning and Phase 1/2 targets still build fine, but anything using
-`io_uring` (Phase 3+) will not link. Install it with `sudo apt install liburing-dev`.
+required on first configure). `liburing` is detected via `find_path`/`find_library`; when found,
+CMake defines `RINGIO_HAVE_LIBURING` and headers that call into it (e.g.
+`BufferPool::register_with`) become available. If it's missing, configure prints a warning and
+everything else still builds fine, but those liburing-calling members are compiled out. Install
+it with `sudo apt install liburing-dev`.
 
 To run a single test: `ctest --test-dir build -R <TestSuite.TestName>`, or run the test binary
 directly with GoogleTest's own filter: `./build/tests/ringio_tests --gtest_filter=<pattern>`.
@@ -58,11 +60,16 @@ misses). ringio's architecture attacks each of these directly:
 ## Repository layout
 
 - `include/ringio/` — the header-only library. `ringio.hpp` is the umbrella header; each phase
-  adds its own header under here (so far: `detail/cache_line.hpp`, the 128-byte cache-line
-  padding wrapper `CacheLinePadded<T>` used to isolate hot atomics from false sharing).
+  adds its own header under here:
+  - `detail/cache_line.hpp` — the 128-byte cache-line padding wrapper `CacheLinePadded<T>` used
+    to isolate hot atomics from false sharing.
+  - `detail/buffer_pool.hpp` — `BufferPool`, a fixed set of page-aligned, `mlock`ed buffers
+    handed out via a lock-free (Treiber-stack) `acquire`/`release`, with
+    `register_with(io_uring*)` to pin them as fixed DMA buffers once liburing is present.
 - `benchmarks/` — Google Benchmark harness. Eventually: IOPS scaling across 1–32 threads,
   p50/p95/p99/p99.9 tail latency, comparisons against POSIX `pread`/`pwrite`, `libaio`, and plain
-  `io_uring` without SQPOLL. Currently just a scaffolding benchmark exercising the build/link path.
+  `io_uring` without SQPOLL. Currently exercises `CacheLinePadded` and `BufferPool`
+  acquire/release (uncontended and contended across thread counts).
 - `tests/` — Google Test suite, mirroring the `include/ringio/` layout (e.g.
   `tests/detail/cache_line_test.cpp` tests `include/ringio/detail/cache_line.hpp`).
 - Root `CMakeLists.txt` defines an `INTERFACE` target `ringio::ringio`; per-directory
