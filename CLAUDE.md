@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Phases 1–2 (repo/build scaffolding, zero-copy page buffer pool) are done — see `ROADMAP.md` for
-what's checked off. Phases 3–6 are not started. Treat `docs/ringio-theory.pdf`
-(motivation/design) and `docs/ringio-roadmap.pdf` (phased implementation plan) as the
-authoritative spec for anything not yet built; this file only tracks what already exists.
+Phases 1–3 (repo/build scaffolding, zero-copy page buffer pool, kernel-bypass submission engine)
+are done — see `ROADMAP.md` for what's checked off. Phases 4–6 are not started. Treat
+`docs/ringio-theory.pdf` (motivation/design) and `docs/ringio-roadmap.pdf` (phased implementation
+plan) as the authoritative spec for anything not yet built; this file only tracks what already
+exists.
 
 ## Building and testing
 
@@ -66,10 +67,18 @@ misses). ringio's architecture attacks each of these directly:
   - `detail/buffer_pool.hpp` — `BufferPool`, a fixed set of page-aligned, `mlock`ed buffers
     handed out via a lock-free (Treiber-stack) `acquire`/`release`, with
     `register_with(io_uring*)` to pin them as fixed DMA buffers once liburing is present.
+  - `detail/spsc_ring.hpp` / `detail/mpmc_ring.hpp` — bounded, zero-allocation lock-free ring
+    buffers (`SpscRing<T, Capacity>`, and `MpmcRing<T, Capacity>` using Vyukov's bounded queue)
+    that worker threads push `IoRequest`s into.
+  - `io_request.hpp` — `IoRequest`, the trivially-copyable request struct the rings carry
+    (opcode, fixed-file index, buffer index, offset, length, correlation token).
+  - `sqpoll_engine.hpp` — `SqpollEngine` (liburing-only): owns an `IORING_SETUP_SQPOLL` ring,
+    registers fixed files/buffers, and `drain_and_submit()`s a batch of `IoRequest`s from either
+    ring type into real `io_uring_sqe`s.
 - `benchmarks/` — Google Benchmark harness. Eventually: IOPS scaling across 1–32 threads,
   p50/p95/p99/p99.9 tail latency, comparisons against POSIX `pread`/`pwrite`, `libaio`, and plain
-  `io_uring` without SQPOLL. Currently exercises `CacheLinePadded` and `BufferPool`
-  acquire/release (uncontended and contended across thread counts).
+  `io_uring` without SQPOLL. Currently exercises `CacheLinePadded`, `BufferPool`, `SpscRing`, and
+  `MpmcRing` (uncontended and contended across thread counts).
 - `tests/` — Google Test suite, mirroring the `include/ringio/` layout (e.g.
   `tests/detail/cache_line_test.cpp` tests `include/ringio/detail/cache_line.hpp`).
 - Root `CMakeLists.txt` defines an `INTERFACE` target `ringio::ringio`; per-directory
@@ -94,9 +103,19 @@ buffer-pool and submission-ring invariants from earlier phases are already in pl
 
 ## Development workflow
 
-- **Testing the application**: `gcloud` is already authenticated — use it to provision/access
-  whatever cloud resources (e.g. an NVMe-backed VM) are needed to actually run and test the
-  engine, rather than asking the user to do it manually.
+- **Testing the application**: `gcloud` is already authenticated (project
+  `project-6e56124d-9e93-4934-ba8`) — build and run the test suite on a GCE VM, not on the local
+  sandbox. The VM gives a real, isolated Linux kernel (needed for `io_uring`/SQPOLL behavior that
+  a sandboxed/virtualized kernel may not support or may behave differently under) and real
+  multi-core hardware for the contended benchmarks. A local build is still fine as a quick
+  compile-only sanity check before provisioning a VM, to catch syntax/type errors for free — just
+  don't run `ctest` or the benchmarks locally and call that the test result.
+  - Provision a short-lived instance (e.g. `e2-standard-4`, spot/preemptible to keep cost down),
+    SSH in, install build deps, clone the branch being tested, build, run `ctest` and the
+    benchmarks, and capture the output.
+  - **Delete the VM immediately after**, success or failure — it bills by the hour and there's no
+    reason to leave it running. Don't leave instances around between sessions; if `gcloud compute
+    instances list` ever shows one left over, delete it before doing anything else.
 - **Branches and PRs**: `gh` is already authenticated — use it directly to create branches and
   open pull requests rather than asking the user to do so.
 - **Commit messages**: do not append a `Co-Authored-By: Claude` trailer.
