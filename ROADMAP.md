@@ -65,6 +65,38 @@ behind each item. Check items off as they land.
 - [x] AddressSanitizer verification (`-fsanitize=address`) — no memory leaks — `RINGIO_ENABLE_ASAN`
       CMake option
 
+### Follow-up: SQPOLL core-budget investigation
+
+Re-running Phase 5's benchmarks on real NVMe (a GCE `n2-standard-4` with a local NVMe SSD, not the
+original run's persistent-disk VM) showed `SqpollEngine` still trailing every baseline and still
+collapsing past 2 threads on 4 vCPUs. The cause: each `SqpollEngine`'s SQPOLL kernel thread
+busy-polls continuously, so it costs a full core by itself — a ring is really a two-core
+commitment, not one, and nothing in the design accounted for that.
+
+`experiments/sqpoll_core_budget.cpp` tested three fixes against raw liburing:
+`IORING_SETUP_ATTACH_WQ` (sharing one poller across rings), `sq_thread_idle` tuning, and
+core-pinning the app thread and poller separately. Sharing the poller was the one that worked —
+independent rings collapsed from 157K IOPS (2 threads) to 71K (8 threads); threads sharing one
+poller climbed to 248K at 8 and hadn't plateaued.
+
+- [x] `SqpollEngine` gets a third constructor parameter, `attach_to`, defaulted to `nullptr` so
+      every existing call site is unaffected — when set, the new engine shares `attach_to`'s
+      kernel poller (`IORING_SETUP_ATTACH_WQ`) instead of spawning its own
+- [x] `BM_SqpollSharedPollerIops` benchmarks it: one master engine plus N-1 attached followers,
+      built before any thread starts (doesn't use `->Threads(N)`, since that ordering can't be
+      guaranteed across per-thread setup — see the function's comment)
+
+One caveat worth being direct about: `BM_SqpollSharedPollerIops`'s own numbers don't show the
+raw harness's full win. Its worker threads call `harvest_completions()` in a busy-spin loop (the
+same round-trip-latency methodology `BM_SqpollIops` uses), which is correct for what it measures
+but means every application thread also burns a full core — on top of the one core the shared
+poller now takes. That reintroduces a core-budget ceiling from the application side once thread
+count exceeds roughly (vCPUs − 1), which is why this benchmark still turns over past 2 threads on
+a 4-vCPU box even though the underlying kernel mechanism doesn't. The raw harness avoids this
+because it blocks on `io_uring_wait_cqe` instead of spinning. A benchmark that queues deeper or
+waits instead of spinning would likely show attach-mode's real ceiling; that's future work, not
+done here.
+
 ## Phase 6 — Paper Writing & Publication
 
 - [ ] Manuscript: methodology, kernel-bypass design, empirical evaluation

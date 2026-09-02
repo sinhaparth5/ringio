@@ -53,6 +53,12 @@ On GCE VMs running kernel 6.8 (the current `ubuntu-2204-lts` image), the TSan bu
 a known TSan/ASLR interaction, not a code problem. `sudo sysctl -w kernel.randomize_va_space=0`
 before building fixes it. ASan doesn't hit this.
 
+`RINGIO_BUILD_EXPERIMENTS` (default `OFF`) builds `experiments/` — exploratory microarchitecture
+programs that talk to raw liburing instead of exercising ringio's own classes, kept separate from
+the library and the benchmark suite because they're throwaway investigation code, not
+CI-tracked results. See `experiments/sqpoll_core_budget.cpp`'s header comment before adding
+another one.
+
 ## What ringio is
 
 ringio is a **header-only C++20, zero-allocation** asynchronous storage engine for Linux. It
@@ -98,17 +104,26 @@ misses). ringio's architecture attacks each of these directly:
   - `sqpoll_engine.hpp` — `SqpollEngine` (liburing-only): owns an `IORING_SETUP_SQPOLL` ring,
     registers fixed files/buffers, `drain_and_submit()`s a batch of `IoRequest`s from either ring
     type into real `io_uring_sqe`s, and `harvest_completions()`s finished CQEs non-blockingly
-    into an `IoCompletion` ring, advancing the CQ tail once per batch.
+    into an `IoCompletion` ring, advancing the CQ tail once per batch. Its constructor takes an
+    optional `attach_to` engine: when set, the new engine shares `attach_to`'s SQPOLL kernel
+    poller (`IORING_SETUP_ATTACH_WQ`) instead of spawning its own, since a poller busy-spins
+    continuously and costs a full core by itself.
 - `benchmarks/` — Google Benchmark harness. Exercises `CacheLinePadded`, `BufferPool`, `SpscRing`,
   `MpmcRing` (uncontended and contended across thread counts), the empty-poll cost of
   `SqpollEngine::harvest_completions`, and (`iops_throughput_benchmark.cpp`) 4KB random
-  read/write IOPS with p50/p95/p99/p99.9 tail latency across four backends: `SqpollEngine`, plain
+  read/write IOPS with p50/p95/p99/p99.9 tail latency across five backends: `SqpollEngine` with
+  an independent poller per thread, `SqpollEngine` with threads sharing one poller, plain
   `io_uring` (no SQPOLL), `libaio` (when present), and POSIX `pread`/`pwrite`, each swept across
   1-32 threads with one file/ring/buffer set per thread.
+- `experiments/` — exploratory microarchitecture programs, built only with
+  `RINGIO_BUILD_EXPERIMENTS=ON` (see Building and testing above). Talk to raw liburing instead of
+  ringio's own classes, since they're investigating questions ringio's API doesn't have hooks for
+  yet; not part of the library or the CI-tracked benchmark results.
 - `tests/` — Google Test suite, mirroring the `include/ringio/` layout (e.g.
   `tests/detail/cache_line_test.cpp` tests `include/ringio/detail/cache_line.hpp`).
 - Root `CMakeLists.txt` defines an `INTERFACE` target `ringio::ringio`; per-directory
-  `CMakeLists.txt` files under `tests/` and `benchmarks/` pull in their respective dependencies.
+  `CMakeLists.txt` files under `tests/`, `benchmarks/`, and `experiments/` pull in their
+  respective dependencies.
 - ThreadSanitizer (`-fsanitize=thread`) and AddressSanitizer (`-fsanitize=address`) are wired in
   via the `RINGIO_ENABLE_TSAN`/`RINGIO_ENABLE_ASAN` CMake options (see Building and testing above).
 
@@ -139,6 +154,13 @@ buffer-pool and submission-ring invariants from earlier phases are already in pl
   - Provision a short-lived instance (e.g. `e2-standard-4`, spot/preemptible to keep cost down),
     SSH in, install build deps, clone the branch being tested, build, run `ctest` and the
     benchmarks, and capture the output.
+  - **For the IOPS/tail-latency benchmarks specifically**, a plain VM's root disk is network
+    persistent storage, not the NVMe the roadmap's target metrics assume — the numbers it
+    produces characterize the virtualization layer, not the design. Use a machine type that
+    supports Local SSD (e.g. `n2-standard-4`) with `--local-ssd=interface=NVME`, then format and
+    mount that device (e.g. bind-mounted over `/tmp`, since the benchmarks' scratch files are
+    hardcoded under `/tmp`) before running the benchmarks. `ctest` doesn't need this; the plain
+    root disk is fine for correctness testing.
   - **Delete the VM immediately after**, success or failure — it bills by the hour and there's no
     reason to leave it running. Don't leave instances around between sessions; if `gcloud compute
     instances list` ever shows one left over, delete it before doing anything else.
