@@ -6,14 +6,16 @@ behind each item. Check items off as they land.
 
 ## Phase 1 — Environment & Memory Alignment
 
-- [ ] Repository directory structure: `include/ringio/`, `benchmarks/`, `tests/`
-- [ ] CMake build targeting C++20 (`-std=c++20`)
-- [ ] Optimization flags enabled (`-O3`, `-march=native`)
-- [ ] Link `liburing` (`-luring`)
-- [ ] 128-byte dual-cache-line-aligned padding wrapper (`alignas(128)`) to isolate atomic
-      head/tail pointers from false sharing
-- [ ] Google Test scaffolding
-- [ ] Google Benchmark scaffolding
+- [x] Repository directory structure: `include/ringio/`, `benchmarks/`, `tests/`
+- [x] CMake build targeting C++20 (`-std=c++20`)
+- [x] Optimization flags enabled (`-O3`, `-march=native`)
+- [x] Link `liburing` (`-luring`) — CMake detects and links it when present; the dev package
+      itself (`sudo apt install liburing-dev`) isn't installed in this sandbox, so this is wired
+      up but not yet exercised end to end
+- [x] 128-byte dual-cache-line-aligned padding wrapper (`alignas(128)`) to isolate atomic
+      head/tail pointers from false sharing — `ringio::detail::CacheLinePadded<T>`
+- [x] Google Test scaffolding
+- [x] Google Benchmark scaffolding
 
 ## Phase 2 — Zero-Copy Page Buffer Pool
 
