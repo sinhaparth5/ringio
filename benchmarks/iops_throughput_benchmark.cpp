@@ -276,12 +276,54 @@ BENCHMARK(BM_PlainIoUringIops)
     ->Threads(32)
     ->UseRealTime();
 
+// A spin loop that never yields keeps its core 100% busy whether or not
+// there's anything to do, which starves whatever else the scheduler wants to
+// run on that core -- including, when threads outnumber vCPUs, the SQPOLL
+// poller itself. WaitForCompletion backs off in three tiers: a few plain
+// retries, then bounded pause-instruction spinning (cheap, keeps the wait
+// latency low, gives the pipeline back to a hyperthread sibling without
+// giving up the core), then a scheduler yield once the wait has gone on long
+// enough that a context switch is worth its cost. This doesn't create CPU
+// capacity that isn't there -- with more application threads than vCPUs
+// minus one (the shared poller's own core), something still waits its turn.
+// It only makes sure that wait is scheduled fairly instead of starving the
+// poller outright.
+#if defined(__x86_64__) || defined(__i386__)
+inline void CpuRelax() { __builtin_ia32_pause(); }
+#elif defined(__aarch64__)
+inline void CpuRelax() { asm volatile("yield"); }
+#else
+inline void CpuRelax() {}
+#endif
+
+template <typename HarvestFn>
+ringio::IoCompletion WaitForCompletion(HarvestFn&& harvest) {
+  static constexpr int kFastRetries = 16;
+  static constexpr int kPauseRetries = 256;
+
+  ringio::IoCompletion completion{};
+  for (int i = 0; i < kFastRetries; ++i) {
+    if (harvest(completion)) return completion;
+  }
+  for (int i = 0; i < kPauseRetries; ++i) {
+    CpuRelax();
+    if (harvest(completion)) return completion;
+  }
+  while (!harvest(completion)) {
+    std::this_thread::yield();
+  }
+  return completion;
+}
+
 // ---------------------------------------------------------------------------
 // ringio's own pipeline: SqpollEngine, fixed files, fixed buffers. Queue
 // depth 1 -- push a request, drain it into the SQ ring, then spin
 // harvest_completions until it comes back -- so what's measured is
 // round-trip completion latency, not queueing behavior behind a deeper
-// pipeline.
+// pipeline. The completion wait itself backs off (see WaitForCompletion)
+// instead of spinning flat out, so it doesn't starve the SQPOLL poller
+// thread of scheduling when application threads outnumber the cores left
+// over after the poller's own.
 // ---------------------------------------------------------------------------
 void BM_SqpollIops(benchmark::State& state) {
   std::optional<ringio::SqpollEngine> engine;
@@ -329,12 +371,11 @@ void BM_SqpollIops(benchmark::State& state) {
     const auto start = std::chrono::steady_clock::now();
     submit_queue.try_push(req);
     engine->drain_and_submit(submit_queue, pool);
-    ringio::IoCompletion completion{};
-    bool got = false;
-    while (!got) {
-      engine->harvest_completions(completions);
-      got = completions.try_pop(completion);
-    }
+    const ringio::IoCompletion completion =
+        WaitForCompletion([&](ringio::IoCompletion& out) {
+          engine->harvest_completions(completions);
+          return completions.try_pop(out);
+        });
     const auto end = std::chrono::steady_clock::now();
     latencies_us.push_back(std::chrono::duration<double, std::micro>(end - start).count());
 
@@ -452,12 +493,11 @@ void BM_SqpollSharedPollerIops(benchmark::State& state) {
           const auto start = std::chrono::steady_clock::now();
           ctx.submit_queue.try_push(req);
           ctx.engine->drain_and_submit(ctx.submit_queue, ctx.pool);
-          ringio::IoCompletion completion{};
-          bool got = false;
-          while (!got) {
-            ctx.engine->harvest_completions(ctx.completions);
-            got = ctx.completions.try_pop(completion);
-          }
+          const ringio::IoCompletion completion =
+              WaitForCompletion([&](ringio::IoCompletion& out) {
+                ctx.engine->harvest_completions(ctx.completions);
+                return ctx.completions.try_pop(out);
+              });
           const auto end = std::chrono::steady_clock::now();
           ctx.latencies_us.push_back(
               std::chrono::duration<double, std::micro>(end - start).count());
