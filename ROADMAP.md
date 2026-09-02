@@ -28,10 +28,13 @@ behind each item. Check items off as they land.
 
 ## Phase 3 — Kernel-Bypass Submission Engine
 
-- [ ] Lock-free zero-allocation SPSC submission queue interfacing with `io_uring_sqe`
-- [ ] Lock-free zero-allocation MPMC submission queue interfacing with `io_uring_sqe`
-- [ ] SQPOLL kernel thread initialization (`IORING_SETUP_SQPOLL`)
-- [ ] Fixed file descriptor registration (`io_uring_register_files()`)
+- [x] Lock-free zero-allocation SPSC submission queue interfacing with `io_uring_sqe` —
+      `ringio::detail::SpscRing<T, Capacity>`
+- [x] Lock-free zero-allocation MPMC submission queue interfacing with `io_uring_sqe` —
+      `ringio::detail::MpmcRing<T, Capacity>` (Vyukov bounded queue)
+- [x] SQPOLL kernel thread initialization (`IORING_SETUP_SQPOLL`) — `ringio::SqpollEngine`
+- [x] Fixed file descriptor registration (`io_uring_register_files()`) —
+      `SqpollEngine::register_files`
 
 ## Phase 4 — Asynchronous Completion Engine
 
