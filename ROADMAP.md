@@ -38,11 +38,17 @@ behind each item. Check items off as they land.
 
 ## Phase 4 — Asynchronous Completion Engine
 
-- [ ] Non-blocking `io_uring_cqe` completion queue harvesting
-- [ ] Single-pass batch submission
-- [ ] Out-of-order request correlation via 64-bit opaque token IDs
-- [ ] Batched completion event dispatch (16–32 events per pass) to minimize atomic tail updates
-- [ ] Zero-allocation completion event handling
+- [x] Non-blocking `io_uring_cqe` completion queue harvesting —
+      `SqpollEngine::harvest_completions`
+- [x] Single-pass batch submission — `SqpollEngine::drain_and_submit` (Phase 3), one
+      `io_uring_submit` call per batch
+- [x] Out-of-order request correlation via 64-bit opaque token IDs — `IoRequest::token` in,
+      `IoCompletion::token` echoed back out; the kernel may complete requests in any order
+- [x] Batched completion event dispatch (16–32 events per pass) to minimize atomic tail updates —
+      `harvest_completions` walks the CQ ring with `io_uring_for_each_cqe` and calls
+      `io_uring_cq_advance` once per batch instead of once per CQE
+- [x] Zero-allocation completion event handling — harvested completions are trivially-copyable
+      `IoCompletion`s pushed into a caller-owned `SpscRing`/`MpmcRing`
 
 ## Phase 5 — Microarchitectural Profiling Suite
 
