@@ -85,7 +85,21 @@ class BufferPool {
   // pop/push/pop race on another thread between our load and CAS can't slip
   // an ABA past us — the tag changes on every push and pop.
   detail::CacheLinePadded<std::atomic<std::uint64_t>> free_head_;
-  std::vector<std::uint32_t> free_next_;
+
+  // free_next_[i] is only ever written by whichever thread currently owns
+  // buffer i (the thread about to publish it via release(), before anyone
+  // else can observe it), and only ever read after acquire() has loaded a
+  // head value naming i -- so the tag already rules out any read seeing a
+  // *wrong* value. But acquire() has to read free_next_[index] before it
+  // knows whether that head value is still current: another thread can
+  // acquire i and release it again (a fresh write to free_next_[i], safe
+  // under the ABA tag) while the first read is in flight. That's a genuine
+  // concurrent read/write on the same element with no ordering between them
+  // -- undefined behavior on a plain std::uint32_t even though the CAS
+  // below is guaranteed to reject the stale read. Atomics with relaxed
+  // ordering make that access well-defined without changing the algorithm;
+  // the head CAS is still what establishes the actual ordering.
+  std::vector<std::atomic<std::uint32_t>> free_next_;
 
   static constexpr std::uint64_t Pack(std::uint32_t index, std::uint32_t tag) noexcept {
     return (static_cast<std::uint64_t>(tag) << 32) | index;
@@ -138,7 +152,8 @@ inline BufferPool::BufferPool(std::size_t buffer_count, std::size_t buffer_size)
     iovecs_.push_back(::iovec{buf, buffer_size_});
     // Thread the free list last-to-first so acquire() hands out index 0
     // first; each entry's "next" is the index below it.
-    free_next_[i] = (i == 0) ? kInvalidIndex : static_cast<std::uint32_t>(i - 1);
+    free_next_[i].store((i == 0) ? kInvalidIndex : static_cast<std::uint32_t>(i - 1),
+                         std::memory_order_relaxed);
   }
   free_head_.get().store(Pack(static_cast<std::uint32_t>(buffer_count_ - 1), 0),
                           std::memory_order_relaxed);
@@ -160,7 +175,7 @@ inline std::uint32_t BufferPool::acquire() noexcept {
     if (index == kInvalidIndex) {
       return kInvalidIndex;
     }
-    const std::uint32_t next = free_next_[index];
+    const std::uint32_t next = free_next_[index].load(std::memory_order_relaxed);
     const std::uint64_t new_head = Pack(next, UnpackTag(head) + 1);
     if (free_head_.get().compare_exchange_weak(head, new_head,
                                                 std::memory_order_acq_rel,
@@ -174,7 +189,7 @@ inline void BufferPool::release(std::uint32_t index) noexcept {
   std::uint64_t head = free_head_.get().load(std::memory_order_relaxed);
   std::uint64_t new_head;
   do {
-    free_next_[index] = UnpackIndex(head);
+    free_next_[index].store(UnpackIndex(head), std::memory_order_relaxed);
     new_head = Pack(index, UnpackTag(head) + 1);
   } while (!free_head_.get().compare_exchange_weak(head, new_head,
                                                      std::memory_order_acq_rel,
