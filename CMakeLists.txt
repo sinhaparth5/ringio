@@ -12,6 +12,8 @@ endif()
 option(RINGIO_BUILD_TESTS "Build the ringio test suite" ON)
 option(RINGIO_BUILD_BENCHMARKS "Build the ringio benchmark suite" ON)
 option(RINGIO_MARCH_NATIVE "Compile with -march=native in Release builds" ON)
+option(RINGIO_ENABLE_TSAN "Build with ThreadSanitizer (-fsanitize=thread)" OFF)
+option(RINGIO_ENABLE_ASAN "Build with AddressSanitizer (-fsanitize=address)" OFF)
 
 # ringio itself is header-only.
 add_library(ringio INTERFACE)
@@ -48,6 +50,26 @@ if(RINGIO_MARCH_NATIVE)
       $<$<CONFIG:Release>:-O3 -march=native>
     )
   endif()
+endif()
+
+# ASan and TSan link incompatible runtimes into the same binary, so only one
+# can be active at a time. Configure a separate build directory for each
+# (e.g. `cmake -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DRINGIO_ENABLE_TSAN=ON`)
+# rather than toggling this option in place -- CMake doesn't clean up flags
+# from a prior configure of the same build directory.
+if(RINGIO_ENABLE_TSAN AND RINGIO_ENABLE_ASAN)
+  message(FATAL_ERROR
+    "ringio: RINGIO_ENABLE_TSAN and RINGIO_ENABLE_ASAN are mutually "
+    "exclusive -- configure separate build directories for each.")
+endif()
+if(RINGIO_ENABLE_TSAN)
+  target_compile_options(ringio INTERFACE -fsanitize=thread -fno-omit-frame-pointer)
+  target_link_options(ringio INTERFACE -fsanitize=thread)
+  message(STATUS "ringio: building with ThreadSanitizer")
+elseif(RINGIO_ENABLE_ASAN)
+  target_compile_options(ringio INTERFACE -fsanitize=address -fno-omit-frame-pointer)
+  target_link_options(ringio INTERFACE -fsanitize=address)
+  message(STATUS "ringio: building with AddressSanitizer")
 endif()
 
 if(RINGIO_BUILD_TESTS)
