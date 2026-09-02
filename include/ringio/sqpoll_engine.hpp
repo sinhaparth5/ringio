@@ -13,6 +13,19 @@
 
 #include <liburing.h>
 
+// io_uring_register_ring_fd() was added in liburing 2.2; older liburing
+// (Ubuntu 22.04 ships 2.1) doesn't declare it at all, so this can't be a
+// runtime fallback -- it has to be compiled out. liburing before 2.2 also
+// doesn't ship io_uring/io_uring_version.h, so its absence is itself the
+// signal to skip the call.
+#if __has_include(<liburing/io_uring_version.h>)
+#include <liburing/io_uring_version.h>
+#if defined(IO_URING_VERSION_MAJOR) && \
+    (IO_URING_VERSION_MAJOR > 2 || (IO_URING_VERSION_MAJOR == 2 && IO_URING_VERSION_MINOR >= 2))
+#define RINGIO_HAVE_REGISTER_RING_FD 1
+#endif
+#endif
+
 #include "ringio/detail/buffer_pool.hpp"
 #include "ringio/io_completion.hpp"
 #include "ringio/io_request.hpp"
@@ -46,6 +59,16 @@ class SqpollEngine {
       throw std::system_error(-ret, std::generic_category(),
                                "SqpollEngine: io_uring_queue_init_params failed");
     }
+    // Registers this ring's own fd (io_uring_register_ring_fd) so liburing's
+    // internal io_uring_enter calls address it through an index instead of
+    // the process fd table, skipping the fget/fput refcount churn that table
+    // lookup costs. When the call is available (see the version check above)
+    // it's still only best-effort: on a kernel too old to support it, it
+    // returns a negative errno, nothing is set, and every call falls back to
+    // the ordinary fd path.
+#if defined(RINGIO_HAVE_REGISTER_RING_FD)
+    ::io_uring_register_ring_fd(&ring_);
+#endif
   }
 
   ~SqpollEngine() { ::io_uring_queue_exit(&ring_); }
