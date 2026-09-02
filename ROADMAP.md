@@ -117,6 +117,43 @@ to 46K IOPS; after it, the same run holds 112K. The independent-ring backend, wi
 poller to protect, still falls off a cliff past 2 threads regardless of backoff. That's expected:
 it still pays the full 2-cores-per-ring cost this investigation exists to fix.
 
+### Follow-up: baseline comparison methodology
+
+With the shared-poller fix and its backoff in place, ran `SqpollEngine` (both the independent-ring
+and shared-poller variants) head-to-head against `BM_PosixPreadPwriteIops`, `BM_LibaioIops`, and
+`BM_PlainIoUringIops` on the same `n2-standard-4` box, to check whether Phase 5's original finding
+("`SqpollEngine` trailing every baseline") still held. It did, by a wide margin at every thread
+count — but the comparison itself turned out to be invalid, for two reasons found in
+`benchmarks/iops_throughput_benchmark.cpp` while checking why the baseline numbers looked too fast
+to be real disk I/O:
+
+- `MakeScratchFile()` never opens with `O_DIRECT`, and the working set is 64 MiB. On a box with far
+  more RAM than that, every backend's I/O after the first pass is served from the page cache, not
+  the NVMe device — POSIX `pread`/`pwrite` hit 698K-1.3M IOPS in this run, which is DRAM speed, not
+  disk speed. The baselines never touched the drive this suite claims to measure.
+- Every backend, `SqpollEngine` included, runs at queue depth 1: submit one request, block-wait for
+  that exact completion, then submit the next (`BM_SqpollIops`'s own comment already says as much).
+  SQPOLL's entire value proposition is amortizing cost across many in-flight requests submitted
+  without a syscall each; at depth 1 there's nothing to amortize, and the design pays kernel-poller
+  scheduling latency against a synchronous path that runs inline instead. Losing here is expected,
+  not a regression — it's evidence the design isn't being exercised, not evidence against it.
+
+So the paper's core hypothesis (kernel-bypass `io_uring`/SQPOLL beats syscall-based I/O) is neither
+confirmed nor refuted by any run so far. Answering it needs a harness redesign, not another rerun:
+
+- [ ] `O_DIRECT | O_RDWR` on the scratch file in `MakeScratchFile()`, with every backend's I/O
+      buffers aligned to the 4096-byte sector size (`posix_memalign`/`std::aligned_alloc`) —
+      `O_DIRECT` rejects unaligned buffers with `EINVAL`. Working set sized well past this box's RAM
+      (or otherwise confirmed to bypass the page cache) so the syscall baselines hit the actual
+      device instead of DRAM.
+- [ ] A queue-depth parameter per backend, swept across QD 1/8/32/64/128: each worker keeps that
+      many requests in flight, reaping completions in batches and immediately resubmitting to keep
+      the pipeline full, instead of the current submit-then-block-wait-one loop. Applies to all four
+      backends being compared, not just the SQPOLL ones — `BM_PlainIoUringIops` also currently waits
+      one CQE at a time.
+- [ ] Rerun all five benchmarks across the QD sweep on the same real-NVMe VM once both land, and
+      replace this section's finding with whatever that run actually shows.
+
 ## Phase 6 — Paper Writing & Publication
 
 - [ ] Manuscript: methodology, kernel-bypass design, empirical evaluation
