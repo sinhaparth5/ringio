@@ -86,16 +86,36 @@ poller climbed to 248K at 8 and hadn't plateaued.
       built before any thread starts (doesn't use `->Threads(N)`, since that ordering can't be
       guaranteed across per-thread setup — see the function's comment)
 
-One caveat worth being direct about: `BM_SqpollSharedPollerIops`'s own numbers don't show the
-raw harness's full win. Its worker threads call `harvest_completions()` in a busy-spin loop (the
-same round-trip-latency methodology `BM_SqpollIops` uses), which is correct for what it measures
-but means every application thread also burns a full core — on top of the one core the shared
-poller now takes. That reintroduces a core-budget ceiling from the application side once thread
-count exceeds roughly (vCPUs − 1), which is why this benchmark still turns over past 2 threads on
-a 4-vCPU box even though the underlying kernel mechanism doesn't. The raw harness avoids this
-because it blocks on `io_uring_wait_cqe` instead of spinning. A benchmark that queues deeper or
-waits instead of spinning would likely show attach-mode's real ceiling; that's future work, not
-done here.
+The first version of this benchmark undersold the fix. Its worker threads called
+`harvest_completions()` in a flat busy-spin loop, so every application thread burned a full core
+on top of the one the shared poller now takes, which reintroduced a core-budget ceiling from the
+application side and made throughput collapse past 2 threads even though the kernel mechanism
+doesn't.
+
+- [x] `WaitForCompletion` (in `benchmarks/iops_throughput_benchmark.cpp`) replaces the flat spin
+      with a three-tier backoff — fast retries, then bounded pause-instruction spinning, then a
+      scheduler yield — so a waiting thread stops denying the scheduler cycles it needs to run
+      the poller. Both `BM_SqpollIops` and `BM_SqpollSharedPollerIops` use it.
+
+With backoff, `BM_SqpollSharedPollerIops` beats the independent-ring `BM_SqpollIops` at every
+thread count above 1, by a wide margin, on the same `n2-standard-4` box:
+
+| threads | independent (`BM_SqpollIops`) | shared poller (`BM_SqpollSharedPollerIops`) |
+|---|---|---|
+| 1 | 194K | 207K |
+| 2 | 205K | 417K |
+| 4 | 1.8K | 163K |
+| 8 | 1.6K | 112K |
+| 16 | 1.1K | 63K |
+| 32 | 1.2K | 31K |
+
+Backoff doesn't create CPU capacity that isn't there, and the shared-poller numbers still peak at
+2 threads and decline afterward: 4 vCPUs means 1 core for the poller and 3 for application
+threads, so anything past that is already oversubscribed. What backoff fixes is the collapse
+being disproportionate to that oversubscription — before it, 8 threads on the shared poller fell
+to 46K IOPS; after it, the same run holds 112K. The independent-ring backend, with no shared
+poller to protect, still falls off a cliff past 2 threads regardless of backoff. That's expected:
+it still pays the full 2-cores-per-ring cost this investigation exists to fix.
 
 ## Phase 6 — Paper Writing & Publication
 
