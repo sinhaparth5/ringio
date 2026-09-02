@@ -14,6 +14,7 @@
 #include <liburing.h>
 
 #include "ringio/detail/buffer_pool.hpp"
+#include "ringio/io_completion.hpp"
 #include "ringio/io_request.hpp"
 
 namespace ringio {
@@ -105,6 +106,47 @@ class SqpollEngine {
       ::io_uring_submit(&ring_);
     }
     return submitted;
+  }
+
+  // Non-blockingly harvests completed CQEs and pushes each into
+  // `out_queue` (either ring type — any type exposing
+  // `bool try_push(const IoCompletion&)`) as the request's token and result
+  // code. Never waits: if nothing has completed yet, returns 0 immediately.
+  //
+  // Walks the CQ ring in place with io_uring_for_each_cqe (a read-only
+  // pointer walk, no kernel state touched yet) instead of calling
+  // io_uring_cqe_seen per entry, then advances the CQ tail once via
+  // io_uring_cq_advance for the whole batch. That turns what would be one
+  // atomic store per completion into one per harvest_completions() call, in
+  // line with the 16-32-per-pass batching this is meant for.
+  //
+  // A CQE is counted "seen" (and its ring slot freed for the kernel to
+  // reuse) as soon as it's walked, whether or not out_queue had room for
+  // it -- there's no way to unsee a CQE once past. Size out_queue for at
+  // least max_batch so a full queue doesn't silently drop completions.
+  template <typename CompletionQueue>
+  std::size_t harvest_completions(CompletionQueue& out_queue, std::size_t max_batch = 32) {
+    std::size_t walked = 0;
+    std::size_t delivered = 0;
+    unsigned head = 0;
+    ::io_uring_cqe* cqe = nullptr;
+    io_uring_for_each_cqe(&ring_, head, cqe) {
+      if (walked >= max_batch) {
+        break;
+      }
+      IoCompletion completion{};
+      completion.token = static_cast<std::uint64_t>(
+          reinterpret_cast<std::uintptr_t>(::io_uring_cqe_get_data(cqe)));
+      completion.result = cqe->res;
+      if (out_queue.try_push(completion)) {
+        ++delivered;
+      }
+      ++walked;
+    }
+    if (walked > 0) {
+      ::io_uring_cq_advance(&ring_, static_cast<unsigned>(walked));
+    }
+    return delivered;
   }
 
   ::io_uring* native_handle() noexcept { return &ring_; }

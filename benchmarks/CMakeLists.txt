@@ -14,5 +14,6 @@ add_executable(ringio_benchmarks
   cache_line_benchmark.cpp
   buffer_pool_benchmark.cpp
   ring_benchmark.cpp
+  completion_engine_benchmark.cpp
 )
 target_link_libraries(ringio_benchmarks PRIVATE ringio::ringio benchmark::benchmark_main)

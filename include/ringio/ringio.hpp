@@ -8,5 +8,6 @@
 #include "ringio/detail/buffer_pool.hpp"
 #include "ringio/detail/spsc_ring.hpp"
 #include "ringio/detail/mpmc_ring.hpp"
+#include "ringio/io_completion.hpp"
 #include "ringio/io_request.hpp"
 #include "ringio/sqpoll_engine.hpp"

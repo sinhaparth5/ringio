@@ -4,8 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Phases 1–3 (repo/build scaffolding, zero-copy page buffer pool, kernel-bypass submission engine)
-are done — see `ROADMAP.md` for what's checked off. Phases 4–6 are not started. Treat
+Phases 1–4 (repo/build scaffolding, zero-copy page buffer pool, kernel-bypass submission engine,
+asynchronous completion engine) are done — see `ROADMAP.md` for what's checked off. Phases 5–6
+are not started. Treat
 `docs/ringio-theory.pdf` (motivation/design) and `docs/ringio-roadmap.pdf` (phased implementation
 plan) as the authoritative spec for anything not yet built; this file only tracks what already
 exists.
@@ -72,13 +73,18 @@ misses). ringio's architecture attacks each of these directly:
     that worker threads push `IoRequest`s into.
   - `io_request.hpp` — `IoRequest`, the trivially-copyable request struct the rings carry
     (opcode, fixed-file index, buffer index, offset, length, correlation token).
+  - `io_completion.hpp` — `IoCompletion`, the trivially-copyable completion struct
+    (`harvest_completions` fills these): the request's token echoed back, plus the raw result
+    (bytes transferred, or `-errno`).
   - `sqpoll_engine.hpp` — `SqpollEngine` (liburing-only): owns an `IORING_SETUP_SQPOLL` ring,
-    registers fixed files/buffers, and `drain_and_submit()`s a batch of `IoRequest`s from either
-    ring type into real `io_uring_sqe`s.
+    registers fixed files/buffers, `drain_and_submit()`s a batch of `IoRequest`s from either ring
+    type into real `io_uring_sqe`s, and `harvest_completions()`s finished CQEs non-blockingly
+    into an `IoCompletion` ring, advancing the CQ tail once per batch.
 - `benchmarks/` — Google Benchmark harness. Eventually: IOPS scaling across 1–32 threads,
   p50/p95/p99/p99.9 tail latency, comparisons against POSIX `pread`/`pwrite`, `libaio`, and plain
-  `io_uring` without SQPOLL. Currently exercises `CacheLinePadded`, `BufferPool`, `SpscRing`, and
-  `MpmcRing` (uncontended and contended across thread counts).
+  `io_uring` without SQPOLL. Currently exercises `CacheLinePadded`, `BufferPool`, `SpscRing`,
+  `MpmcRing` (uncontended and contended across thread counts), and the empty-poll cost of
+  `SqpollEngine::harvest_completions`.
 - `tests/` — Google Test suite, mirroring the `include/ringio/` layout (e.g.
   `tests/detail/cache_line_test.cpp` tests `include/ringio/detail/cache_line.hpp`).
 - Root `CMakeLists.txt` defines an `INTERFACE` target `ringio::ringio`; per-directory
