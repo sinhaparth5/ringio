@@ -52,13 +52,18 @@ behind each item. Check items off as they land.
 
 ## Phase 5 — Microarchitectural Profiling Suite
 
-- [ ] Google Benchmark throughput harness: 4KB random read/write IOPS scaling across 1–32 threads
-- [ ] Tail latency tracking: p50, p95, p99, p99.9
-- [ ] Baseline comparison vs. POSIX `pread`/`pwrite`
-- [ ] Baseline comparison vs. `libaio`
-- [ ] Baseline comparison vs. plain `io_uring` (no SQPOLL)
-- [ ] ThreadSanitizer verification (`-fsanitize=thread`) — zero race conditions
-- [ ] AddressSanitizer verification (`-fsanitize=address`) — no memory leaks
+- [x] Google Benchmark throughput harness: 4KB random read/write IOPS scaling across 1–32 threads —
+      `BM_SqpollIops` in `benchmarks/iops_throughput_benchmark.cpp`
+- [x] Tail latency tracking: p50, p95, p99, p99.9 — `ReportPercentiles` in the same file, applied to
+      every backend benchmarked
+- [x] Baseline comparison vs. POSIX `pread`/`pwrite` — `BM_PosixPreadPwriteIops`
+- [x] Baseline comparison vs. `libaio` — `BM_LibaioIops` (built when `libaio-dev` is present;
+      detected in `benchmarks/CMakeLists.txt`)
+- [x] Baseline comparison vs. plain `io_uring` (no SQPOLL) — `BM_PlainIoUringIops`
+- [x] ThreadSanitizer verification (`-fsanitize=thread`) — zero race conditions — `RINGIO_ENABLE_TSAN`
+      CMake option; caught and fixed a real data race in `BufferPool`'s free-list on the first run
+- [x] AddressSanitizer verification (`-fsanitize=address`) — no memory leaks — `RINGIO_ENABLE_ASAN`
+      CMake option
 
 ## Phase 6 — Paper Writing & Publication
 

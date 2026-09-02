@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Phases 1–4 (repo/build scaffolding, zero-copy page buffer pool, kernel-bypass submission engine,
-asynchronous completion engine) are done — see `ROADMAP.md` for what's checked off. Phases 5–6
-are not started. Treat
+Phases 1–5 (repo/build scaffolding, zero-copy page buffer pool, kernel-bypass submission engine,
+asynchronous completion engine, microarchitectural profiling suite) are done — see `ROADMAP.md`
+for what's checked off. Phase 6 is not started. Treat
 `docs/ringio-theory.pdf` (motivation/design) and `docs/ringio-roadmap.pdf` (phased implementation
 plan) as the authoritative spec for anything not yet built; this file only tracks what already
 exists.
@@ -33,6 +33,25 @@ directly with GoogleTest's own filter: `./build/tests/ringio_tests --gtest_filte
 `RINGIO_BUILD_TESTS`, `RINGIO_BUILD_BENCHMARKS`, and `RINGIO_MARCH_NATIVE` are CMake options
 (all default `ON`) if you need to disable one, e.g. when `-march=native` isn't safe for the
 target machine.
+
+`RINGIO_ENABLE_TSAN` and `RINGIO_ENABLE_ASAN` (both default `OFF`, mutually exclusive) wire
+`-fsanitize=thread`/`-fsanitize=address` into the `ringio` interface target. Use a separate build
+directory per sanitizer rather than reconfiguring one in place:
+
+```sh
+cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DRINGIO_ENABLE_TSAN=ON
+cmake --build build-tsan -j"$(nproc)"
+ctest --test-dir build-tsan --output-on-failure
+```
+
+`libaio` is detected separately in `benchmarks/CMakeLists.txt` (not the root file, since it's only
+needed by one baseline benchmark) via `find_path`/`find_library`; when found it defines
+`RINGIO_HAVE_LIBAIO` for the benchmarks target. Install it with `sudo apt install libaio-dev`.
+
+On GCE VMs running kernel 6.8 (the current `ubuntu-2204-lts` image), the TSan build's
+`gtest_discover_tests` step can fail with `FATAL: ThreadSanitizer: unexpected memory mapping` —
+a known TSan/ASLR interaction, not a code problem. `sudo sysctl -w kernel.randomize_va_space=0`
+before building fixes it. ASan doesn't hit this.
 
 ## What ringio is
 
@@ -80,17 +99,18 @@ misses). ringio's architecture attacks each of these directly:
     registers fixed files/buffers, `drain_and_submit()`s a batch of `IoRequest`s from either ring
     type into real `io_uring_sqe`s, and `harvest_completions()`s finished CQEs non-blockingly
     into an `IoCompletion` ring, advancing the CQ tail once per batch.
-- `benchmarks/` — Google Benchmark harness. Eventually: IOPS scaling across 1–32 threads,
-  p50/p95/p99/p99.9 tail latency, comparisons against POSIX `pread`/`pwrite`, `libaio`, and plain
-  `io_uring` without SQPOLL. Currently exercises `CacheLinePadded`, `BufferPool`, `SpscRing`,
-  `MpmcRing` (uncontended and contended across thread counts), and the empty-poll cost of
-  `SqpollEngine::harvest_completions`.
+- `benchmarks/` — Google Benchmark harness. Exercises `CacheLinePadded`, `BufferPool`, `SpscRing`,
+  `MpmcRing` (uncontended and contended across thread counts), the empty-poll cost of
+  `SqpollEngine::harvest_completions`, and (`iops_throughput_benchmark.cpp`) 4KB random
+  read/write IOPS with p50/p95/p99/p99.9 tail latency across four backends: `SqpollEngine`, plain
+  `io_uring` (no SQPOLL), `libaio` (when present), and POSIX `pread`/`pwrite`, each swept across
+  1-32 threads with one file/ring/buffer set per thread.
 - `tests/` — Google Test suite, mirroring the `include/ringio/` layout (e.g.
   `tests/detail/cache_line_test.cpp` tests `include/ringio/detail/cache_line.hpp`).
 - Root `CMakeLists.txt` defines an `INTERFACE` target `ringio::ringio`; per-directory
   `CMakeLists.txt` files under `tests/` and `benchmarks/` pull in their respective dependencies.
-- Correctness passes intended via ThreadSanitizer (`-fsanitize=thread`) for race detection and
-  AddressSanitizer (`-fsanitize=address`) for leaks — not wired into the build yet (Phase 5).
+- ThreadSanitizer (`-fsanitize=thread`) and AddressSanitizer (`-fsanitize=address`) are wired in
+  via the `RINGIO_ENABLE_TSAN`/`RINGIO_ENABLE_ASAN` CMake options (see Building and testing above).
 
 ## Engineering sequencing
 
