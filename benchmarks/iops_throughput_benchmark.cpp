@@ -490,7 +490,8 @@ BENCHMARK(BM_SqpollSharedPollerIops)
     ->Arg(4)
     ->Arg(8)
     ->Arg(16)
-    ->Arg(32);
+    ->Arg(32)
+    ->UseRealTime();
 #endif  // RINGIO_HAVE_LIBURING
 
 }  // namespace
