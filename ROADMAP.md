@@ -141,18 +141,55 @@ to be real disk I/O:
 So the paper's core hypothesis (kernel-bypass `io_uring`/SQPOLL beats syscall-based I/O) is neither
 confirmed nor refuted by any run so far. Answering it needs a harness redesign, not another rerun:
 
-- [ ] `O_DIRECT | O_RDWR` on the scratch file in `MakeScratchFile()`, with every backend's I/O
+- [x] `O_DIRECT | O_RDWR` on the scratch file in `MakeScratchFile()`, with every backend's I/O
       buffers aligned to the 4096-byte sector size (`posix_memalign`/`std::aligned_alloc`) —
       `O_DIRECT` rejects unaligned buffers with `EINVAL`. Working set sized well past this box's RAM
       (or otherwise confirmed to bypass the page cache) so the syscall baselines hit the actual
       device instead of DRAM.
-- [ ] A queue-depth parameter per backend, swept across QD 1/8/32/64/128: each worker keeps that
+- [x] A queue-depth parameter per backend, swept across QD 1/8/32/64/128: each worker keeps that
       many requests in flight, reaping completions in batches and immediately resubmitting to keep
       the pipeline full, instead of the current submit-then-block-wait-one loop. Applies to all four
       backends being compared, not just the SQPOLL ones — `BM_PlainIoUringIops` also currently waits
       one CQE at a time.
-- [ ] Rerun all five benchmarks across the QD sweep on the same real-NVMe VM once both land, and
+- [x] Rerun all five benchmarks across the QD sweep on the same real-NVMe VM once both land, and
       replace this section's finding with whatever that run actually shows.
+
+### Follow-up: O_DIRECT and queue-depth results
+
+Landed both fixes and reran on the same `n2-standard-4`-with-local-NVMe setup. `MakeScratchFile()`
+now reopens with `O_DIRECT` (buffers moved to `posix_memalign`-aligned storage, since `O_DIRECT`
+rejects unaligned ones with `EINVAL`), and `libaio`, plain `io_uring`, and both `SqpollEngine`
+backends pipeline `queue_depth` requests in flight instead of one at a time, swept across QD
+1/8/32/64/128 at 1 and 4 threads (bounded down from the full 1-32 thread sweep to keep the QD ×
+thread cross product to a reasonable amount of VM time — see the benchmark file's header comment).
+POSIX `pread`/`pwrite` kept its full thread sweep with no QD axis, since a blocking syscall has
+nothing to pipeline.
+
+The page-cache fix is confirmed by the numbers themselves: every backend now tops out around 200K
+IOPS instead of the previous run's 698K-1.3M, which is a physically plausible ceiling for real NVMe
+under virtualization rather than DRAM speed.
+
+The core hypothesis is still not confirmed, though — at matched thread count and queue depth, plain
+`io_uring` and `libaio` match or beat both `SqpollEngine` variants on raw IOPS. At 4 threads, plain
+`io_uring` and `libaio` both plateau around 199-200K ops/s from QD 8 upward; `SqpollEngine`'s best
+result at 4 threads is 135K (shared poller, QD 128). The independent-ring variant does worse still
+(132K at QD 128), and it reproduces the exact core-budget collapse from the investigation above at
+QD 1 (11.6K at 4 threads, down from 23.4K at 1 thread) — the same effect, now visible across the QD
+axis as well, not just the thread-count axis.
+
+Where the design's advantage does show up is round-trip cost: at QD 128, `SqpollIops` needs roughly
+0.1-0.3 submit/reap calls per completed op (see the benchmark file's `calls_per_op` counter and its
+comment on why this is a round-trip count, not a confirmed syscall count, for the io_uring-based
+backends), against 1.3-4.3 for plain `io_uring` at the same setting. That's the batching mechanism
+working as designed. But it comes at a tail-latency cost: at 4 threads/QD 128, `SqpollIops` p99 is
+23.5ms, worse than plain `io_uring` (15.0ms) or `libaio` (14.3ms) at the identical setting — SQPOLL
+is spending fewer syscalls but queuing completions longer before harvesting them.
+
+So the finding this harness actually supports is narrower than "SQPOLL wins": fewer round trips per
+op, not more throughput, and worse tail latency at depth on this hardware. Whether that's inherent
+to the design or an artifact of this specific box's poller-vs-worker core split (still contended at
+4 threads on a 4-vCPU machine) is open — a wider core count, or a poller-idle/backoff tuning pass,
+would be needed to separate the two. Not scheduled yet.
 
 ## Phase 6 — Paper Writing & Publication
 
