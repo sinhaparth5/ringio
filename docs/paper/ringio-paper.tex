@@ -22,7 +22,7 @@
 
 \begin{document}
 
-\title{Measuring the Limits of SQPOLL \texttt{io\_uring}\\for NVMe I/O}
+\title{SQPOLL \texttt{io\_uring} Against a Device-Saturated Cloud NVMe SSD:\\An Empirical Study}
 
 \author{
   \IEEEauthorblockN{Parth}
@@ -37,17 +37,24 @@ mode are motivated by a simple argument: a dedicated kernel polling thread remov
 per-operation syscall that blocking and non-polling asynchronous I/O interfaces pay, so on
 modern NVMe hardware, where flash latency is no longer the bottleneck, SQPOLL should win on
 throughput. We built \texttt{ringio}, a header-only C++20 storage engine around this argument,
-and tested it against \texttt{libaio} and plain \texttt{io\_uring} (no SQPOLL) on real NVMe
-across two machine sizes (4 and 16 vCPUs) and a swept queue-depth and thread-count matrix. The
-argument does not hold in our measurements. At matched thread count and queue depth, SQPOLL does
-not beat the syscall-based baselines on raw IOPS at either machine size, ruling out core
-oversubscription as the explanation. \texttt{libaio}'s advantage over SQPOLL widens, not narrows,
-on the wider box, and SQPOLL's tail latency degrades under more available cores rather than
-improving. What SQPOLL does deliver is a large reduction in kernel entries per completed
-operation, roughly an order of magnitude fewer than plain \texttt{io\_uring} at high queue depth,
-at the cost of that added tail latency. We report the full methodology, including a
-page-cache measurement defect that invalidated an earlier round of results, and discuss what
-this suite's data does and does not establish about the underlying cause.
+and tested it against \texttt{libaio} and plain \texttt{io\_uring} (no SQPOLL) on a virtualized
+cloud NVMe device across two machine sizes (4 and 16 vCPUs) and a swept queue-depth and
+thread-count matrix, alternating 4KB random reads and writes. The argument does not hold once the
+device itself saturates: at matched thread count and queue depth, SQPOLL does not beat the
+syscall-based baselines on raw IOPS at either machine size once concurrency is high enough to
+reach the device's roughly 200K-IOPS ceiling, ruling out core oversubscription as the
+explanation for that plateau. Below the plateau, at a single thread, the gap is starker still:
+\texttt{libaio} reaches more than double SQPOLL's throughput on the same hardware, a gap that
+widens rather than narrows on the wider box. SQPOLL's tail latency also degrades under more
+available cores rather than improving. What SQPOLL does deliver is a large reduction in kernel
+entries per completed operation, roughly an order of magnitude fewer than plain \texttt{io\_uring}
+at high queue depth, at the cost of that added tail latency. Reading this alongside two recent
+studies that do report SQPOLL wins in CPU-bound settings, our results are consistent with a
+resolution neither we nor they test directly: SQPOLL's advantage is conditional on the CPU or
+syscall path being the bottleneck, and it disappears once a saturated device becomes the limit
+first. We report the full methodology, including a page-cache measurement defect that invalidated
+an earlier round of results, and discuss what this suite's data does and does not establish about
+the underlying cause.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -225,6 +232,19 @@ were used: an \texttt{n2-standard-4} (4 vCPUs) for the initial redesign and its 
 Section~V-D. Both ran at a fixed 2.8\,GHz per vCPU with frequency scaling disabled. Every VM was
 deleted immediately after its run.
 
+\subsection{Reproducibility}
+
+Both machine sizes ran the same image, \texttt{ubuntu-2204-lts}, kernel 6.8, with
+\texttt{liburing} 2.1 as packaged by that image's \texttt{apt} repository.
+\texttt{SqpollEngine} sets only two \texttt{io\_uring} setup flags,
+\texttt{IORING\_SETUP\_SQPOLL} and, for the shared-poller variant,
+\texttt{IORING\_SETUP\_ATTACH\_WQ}; \texttt{IORING\_SETUP\_SINGLE\_ISSUER},
+\texttt{IORING\_SETUP\_COOP\_TASKRUN}, and \texttt{IORING\_SETUP\_DEFER\_TASKRUN} are not set
+anywhere in this codebase. \texttt{sq\_thread\_idle} is 1000\,ms everywhere in this study; we did
+not sweep it. Neither the SQPOLL kernel thread nor any application thread was pinned to a
+specific core. NVMe queue count and IOMMU configuration on the underlying GCE Local SSD device
+were not recorded and are not user-controllable on this instance type as far as we are aware.
+
 \section{Results}
 
 \subsection{The page-cache measurement defect}
@@ -340,6 +360,15 @@ scarcer resource there. At 4 and 8 threads, every backend converges to roughly 2
 regardless of queue depth; that plateau is the NVMe device's ceiling, the same one the
 \texttt{O\_DIRECT} fix surfaced in Section~V-B, and it is reached by every backend once there is
 enough concurrency to reach it, not a property of any one backend's design.
+
+That plateau is also why the single-thread row of Table~\ref{tab:16vcpu-qd32} is the more
+informative one, not the 4- and 8-thread rows this section led with. Once the device is
+saturated, no submission path can raise IOPS further, so a comparison at the plateau measures
+the device, not the interface. Below it, at 1 thread and queue depth 32, \texttt{libaio} reaches
+160.7K IOPS while every \texttt{io\_uring}-based backend, SQPOLL included, is stuck at 69--80K:
+more than double the throughput from the same single thread, before the device becomes the
+limit. That gap, not the shared plateau, is where an interface-level difference is actually
+visible in this data.
 
 \begin{figure}[t]
 \centering
@@ -468,9 +497,14 @@ an upper bound for the three \texttt{io\_uring}-based backends, as discussed in 
 true syscall counts for those backends may be lower than reported. Each backend was measured at
 its own best-practice buffer handling (\texttt{SqpollEngine}'s fixed, pre-registered buffers
 against the baselines' aligned heap memory), which is the intended comparison but is not an
-identical-conditions comparison in the buffer-handling dimension. Finally, the discussion in
-Section~VI is explicitly not settled by this data; the cross-core contention hypothesis has not
-been tested with hardware performance counters.
+identical-conditions comparison in the buffer-handling dimension. The discussion in Section~VI is
+explicitly not settled by this data; the cross-core contention hypothesis has not been tested
+with hardware performance counters, and the fixed \texttt{sq\_thread\_idle} and completion-side
+backoff constants (Section~IV-D) were not swept. Finally, this study compares only SQPOLL, plain
+\texttt{io\_uring}, \texttt{libaio}, and POSIX; it does not measure
+\texttt{IORING\_SETUP\_IOPOLL} (completion-side polling against a driver configured for it),
+NVMe passthrough via \texttt{IORING\_OP\_URING\_CMD}, or SPDK, all of which target the same
+per-operation overhead from different angles and are the natural next comparison points.
 
 \section{Related Work}
 
@@ -483,24 +517,48 @@ in user space with no kernel involvement in the data path at all, a stronger des
 SQPOLL, which still routes I/O through the kernel's block layer but removes the per-operation
 syscall. \texttt{io\_uring} itself, and the SQPOLL mode this paper evaluates, are described in
 Axboe's original design document~\cite{axboe-io-uring}; \texttt{libaio}'s interface is documented
-in the Linux man-pages project~\cite{aio-manpages}. Where this paper differs from prior
-descriptions of \texttt{io\_uring}'s design intent is in reporting where an implementation built
-around that intent actually lands empirically against its intended baselines, including a
-negative result on raw throughput and the measurement pitfalls that produced misleading numbers
-along the way.
+in the Linux man-pages project~\cite{aio-manpages}.
+
+Two more recent studies bear directly on this paper's negative result. Didona et
+al.~\cite{didona2022} ran one of the first systematic comparisons of \texttt{libaio}, SPDK, and
+\texttt{io\_uring} and found that \texttt{io\_uring}'s polling design has a large effect on
+performance, that it can approach SPDK given enough CPU cores, and that scaling across cores and
+devices needs a hybrid approach rather than one polling strategy applied uniformly, consistent
+with this paper's finding that adding cores did not close SQPOLL's gap on its own. Jasny et
+al.~\cite{jasny2025} evaluate \texttt{io\_uring} inside a database buffer manager and report
+SQPOLL as one of several incremental wins, roughly 32\% throughput at their operating point,
+alongside registered buffers, \texttt{IORING\_SETUP\_IOPOLL}, and NVMe passthrough, in a workload
+built to keep the CPU, not the device, as the bottleneck. Both studies point at the same
+resolution this paper's data supports without directly testing it: SQPOLL's win condition is a
+CPU- or syscall-bound workload, and it disappears once something else, a saturated device in our
+case, becomes the limit first. The Linux \texttt{io\_uring\_sqpoll}(7) manual page states this
+directly, that SQPOLL "is not universally beneficial and each use case should be benchmarked to
+determine if it provides value," and specifically warns against it on CPU-constrained systems and
+bursty workloads with long idle gaps~\cite{sqpoll-manpage}. Where this paper differs from all
+three is in reporting where an implementation built around the opposite assumption, that SQPOLL
+should win outright, actually lands empirically once that assumption is tested against a
+device-saturated rather than CPU-saturated setup, including a negative result on raw throughput
+and the measurement pitfalls that produced misleading numbers along the way.
 
 \section{Conclusion}
 
 We built \texttt{ringio} around the argument that an SQPOLL kernel poller, by removing the
 per-operation syscall other asynchronous I/O interfaces still pay, should win on IOPS against
-\texttt{libaio} and plain \texttt{io\_uring} on real NVMe. Measured across two machine sizes and
-a swept thread-count and queue-depth matrix, it does not. \texttt{libaio} matches or beats every
-SQPOLL configuration we tested on raw IOPS at every point in the matrix, and its advantage grows,
-not shrinks, on a wider-core machine, ruling out core oversubscription as the explanation.
-SQPOLL's actual advantage, an order-of-magnitude reduction in kernel entries per completed
-operation at high queue depth, comes with a tail-latency cost that also grows on the wider
-machine rather than shrinking. The underlying mechanism for that growth remains open; this paper
-reports what was measured and separates it plainly from what was not.
+\texttt{libaio} and plain \texttt{io\_uring} on a real NVMe device. Measured across two machine
+sizes and a swept thread-count and queue-depth matrix against a virtualized cloud SSD, it does
+not, once that device saturates. \texttt{libaio} matches or beats every SQPOLL configuration we
+tested on raw IOPS at every point in the matrix, its advantage is largest, not smallest, below
+the device's throughput ceiling, and it grows, not shrinks, on a wider-core machine, ruling out
+core oversubscription as the explanation. SQPOLL's actual advantage, an order-of-magnitude
+reduction in kernel entries per completed operation at high queue depth, comes with a
+tail-latency cost that also grows on the wider machine rather than shrinking. Reading this
+against Didona et al.~\cite{didona2022} and Jasny et al.~\cite{jasny2025}, who report SQPOLL
+winning in CPU-bound settings this study's device-bound one does not reach, points at a
+resolution this paper does not test directly: SQPOLL's value is conditional on where the
+bottleneck sits, not a fixed property of the mechanism. The underlying mechanism for the
+tail-latency growth remains open, and this study does not compare against
+\texttt{IORING\_SETUP\_IOPOLL}, NVMe passthrough, or SPDK; this paper reports what was measured
+against the four interfaces it did test and separates that plainly from what it did not.
 
 \begin{thebibliography}{9}
 
@@ -525,6 +583,19 @@ J.~Axboe, ``Efficient IO with io\_uring,'' Linux kernel documentation,
 \bibitem{aio-manpages}
 Linux man-pages project, \texttt{io\_submit(2)}, \texttt{io\_getevents(2)}, and
 \texttt{io\_uring\_enter(2)} manual pages, \url{https://man7.org}.
+
+\bibitem{didona2022}
+D.~Didona, J.~Pfefferle, N.~Ioannou, B.~Metzler, and A.~Trivedi, ``Understanding modern storage
+APIs: a systematic study of libaio, SPDK, and io\_uring,'' in \textit{Proceedings of the 15th ACM
+International Conference on Systems and Storage (SYSTOR)}, 2022, pp.~120--127.
+
+\bibitem{jasny2025}
+M.~Jasny, M.~El-Hindi, T.~Ziegler, V.~Leis, and C.~Binnig, ``io\_uring for high-performance DBMSs:
+when and how to use it,'' \textit{arXiv preprint} arXiv:2512.04859, 2025.
+
+\bibitem{sqpoll-manpage}
+\texttt{io\_uring\_sqpoll(7)} manual page, liburing project,
+\url{https://manpages.debian.org/testing/liburing-dev/io_uring_sqpoll.7.en.html}.
 
 \end{thebibliography}
 
