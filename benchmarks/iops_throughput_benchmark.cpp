@@ -55,10 +55,18 @@
 //
 // Runtime/cost: crossing the full 1-32 thread sweep against the full QD
 // sweep for four backends is 30 combinations each -- more VM time than the
-// question needs. The four pipelined backends run at threads in {1, 4}
-// (single-thread ceiling, and this box's full vCPU count) crossed with QD
-// in {1, 8, 32, 64, 128}. POSIX keeps the full 1-32 thread sweep since it's
-// cheap and has no QD dimension to cross it against.
+// question needs. The four pipelined backends run at threads in
+// {1, 2, 4, 8} crossed with QD in {1, 8, 32, 64, 128}. POSIX keeps the full
+// 1-32 thread sweep since it's cheap and has no QD dimension to cross it
+// against.
+//
+// The thread-count set widened from {1, 4} to {1, 2, 4, 8} for the
+// wider-core rerun: the earlier 4-vCPU run couldn't tell whether
+// SqpollEngine's IOPS shortfall against plain io_uring/libaio was inherent
+// to the design or an artifact of a SQPOLL poller thread and 4 worker
+// threads fighting over 4 cores. Running the same thread counts on a box
+// with real headroom (e.g. 16 vCPUs) isolates that -- see ROADMAP.md's
+// "O_DIRECT and queue-depth results" section for what the 4-vCPU run found.
 
 #include <algorithm>
 #include <chrono>
@@ -111,7 +119,7 @@ constexpr auto kBurstDuration = std::chrono::milliseconds(500);
 // Bounded thread counts for the pipelined (QD-aware) backends -- see the
 // file header's "Runtime/cost" note for why this doesn't cross the full
 // 1-32 sweep POSIX uses.
-constexpr int kPipelinedThreadCounts[] = {1, 4};
+constexpr int kPipelinedThreadCounts[] = {1, 2, 4, 8};
 
 // Ring/context sizing shared by every backend that needs to hold at least
 // `queue_depth` requests outstanding -- comfortably above the QD sweep's
@@ -380,6 +388,8 @@ void BM_LibaioIops(benchmark::State& state) {
 BENCHMARK(BM_LibaioIops)
     ->Threads(kPipelinedThreadCounts[0])
     ->Threads(kPipelinedThreadCounts[1])
+    ->Threads(kPipelinedThreadCounts[2])
+    ->Threads(kPipelinedThreadCounts[3])
     ->Arg(1)
     ->Arg(8)
     ->Arg(32)
@@ -491,6 +501,8 @@ void BM_PlainIoUringIops(benchmark::State& state) {
 BENCHMARK(BM_PlainIoUringIops)
     ->Threads(kPipelinedThreadCounts[0])
     ->Threads(kPipelinedThreadCounts[1])
+    ->Threads(kPipelinedThreadCounts[2])
+    ->Threads(kPipelinedThreadCounts[3])
     ->Arg(1)
     ->Arg(8)
     ->Arg(32)
@@ -610,6 +622,8 @@ void BM_SqpollIops(benchmark::State& state) {
 BENCHMARK(BM_SqpollIops)
     ->Threads(kPipelinedThreadCounts[0])
     ->Threads(kPipelinedThreadCounts[1])
+    ->Threads(kPipelinedThreadCounts[2])
+    ->Threads(kPipelinedThreadCounts[3])
     ->Arg(1)
     ->Arg(8)
     ->Arg(32)
@@ -779,7 +793,9 @@ void BM_SqpollSharedPollerIops(benchmark::State& state) {
 }
 BENCHMARK(BM_SqpollSharedPollerIops)
     ->ArgNames({"threads", "queue_depth"})
-    ->ArgsProduct({{kPipelinedThreadCounts[0], kPipelinedThreadCounts[1]}, {1, 8, 32, 64, 128}})
+    ->ArgsProduct({{kPipelinedThreadCounts[0], kPipelinedThreadCounts[1], kPipelinedThreadCounts[2],
+                    kPipelinedThreadCounts[3]},
+                   {1, 8, 32, 64, 128}})
     ->UseRealTime();
 #endif  // RINGIO_HAVE_LIBURING
 
