@@ -191,6 +191,34 @@ to the design or an artifact of this specific box's poller-vs-worker core split 
 4 threads on a 4-vCPU machine) is open — a wider core count, or a poller-idle/backoff tuning pass,
 would be needed to separate the two. Not scheduled yet.
 
+### Follow-up: wider-core rerun (n2-standard-16)
+
+Widened `kPipelinedThreadCounts` from `{1, 4}` to `{1, 2, 4, 8}` and reran on an `n2-standard-16`
+with local NVMe, giving every configuration up to 8 worker threads plus the SQPOLL poller thread
+room across 16 vCPUs — the 4-vCPU box's tightest case (4 workers + 1 poller) had exactly as many
+threads as cores.
+
+Core oversubscription is ruled out as the explanation. At every matched thread count and queue
+depth, `SqpollEngine` (both variants) still doesn't beat plain `io_uring` or `libaio` on raw IOPS —
+the gap from the 4-vCPU run persists on a box where the poller has a dedicated core to itself.
+`libaio` is the standout instead, and its lead widens rather than narrows once threads are cheap:
+at 1 thread/QD 32 it does 160.7K ops/s against 69-80K for the other three backends, a gap this
+suite hadn't shown at 4 vCPUs, where thread count was the scarcer resource than depth.
+
+At 4-8 threads, every backend converges to roughly 200-207K ops/s regardless of QD, matching the
+same device ceiling the O_DIRECT fix surfaced — that plateau, not per-backend design, is what's
+capping throughput once there's enough concurrency to reach it. `SqpollSharedPollerIops`'s tail
+latency is worse here than on the 4-vCPU box, not better: p99 at 4 threads/QD 128 is 47.6ms against
+23.5ms before, while `libaio`'s p99 at the same setting (15.1ms) is close to unchanged. More worker
+threads sharing one poller queues completions longer before they're harvested; a wider core count
+made that worse, not better.
+
+The open question from the previous section is answered: the shortfall isn't an artifact of core
+contention on a small box. It's either inherent to SQPOLL's completion-harvesting path as
+implemented here, or something this suite hasn't isolated yet (poller idle/backoff tuning is still
+untried). Full results: `benchmarks/iops_throughput_benchmark.cpp` on
+`widen-pipelined-thread-sweep`, raw JSON not checked in.
+
 ## Phase 6 — Paper Writing & Publication
 
 - [ ] Manuscript: methodology, kernel-bypass design, empirical evaluation
