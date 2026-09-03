@@ -7,6 +7,18 @@
 \usepackage{xcolor}
 \usepackage[hidelinks]{hyperref}
 \usepackage{cite}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+% Palette matched to the project wordmark (assets/logo-*.svg): accent green for
+% libaio, the baseline that wins outright, then three more hues distinct enough
+% to separate on a grayscale printout via marker and line-style alone.
+\definecolor{cLibaio}{HTML}{22C55E}
+\definecolor{cPlainUring}{HTML}{3B82F6}
+\definecolor{cSqpollIndep}{HTML}{F59E0B}
+\definecolor{cSqpollShared}{HTML}{8B5CF6}
+\definecolor{cBox4}{HTML}{94A3B8}
+\definecolor{cBox16}{HTML}{1E293B}
 
 \begin{document}
 
@@ -254,6 +266,34 @@ Plain \texttt{io\_uring} & 1.3--4.3 & 15.0 \\
 \end{tabular}
 \end{table}
 
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    ybar,
+    width=\linewidth,
+    height=0.6\linewidth,
+    symbolic x coords={libaio,plain io\_uring,SqpollEngine},
+    xtick=data,
+    x tick label style={font=\scriptsize},
+    ylabel={calls per op},
+    ymin=0,
+    bar width=16pt,
+    nodes near coords,
+    every node near coord/.append style={font=\scriptsize},
+    enlarge x limits=0.3,
+]
+\addplot[fill=cLibaio] coordinates {(libaio,2.8)};
+\addplot[fill=cPlainUring] coordinates {(plain io\_uring,2.8)};
+\addplot[fill=cSqpollIndep] coordinates {(SqpollEngine,0.2)};
+\end{axis}
+\end{tikzpicture}
+\caption{Round trips per completed operation at 4 threads, queue depth 128. Bars for
+\texttt{libaio} and plain \texttt{io\_uring} plot the midpoint of their reported 1.3--4.3 range;
+Table~\ref{tab:4vcpu-calls} has the exact figures.}
+\label{fig:calls-per-op}
+\end{figure}
+
 Table~\ref{tab:4vcpu-calls} shows where SQPOLL's design does pay off: at queue depth 128,
 \texttt{SqpollIops} needs roughly an order of magnitude fewer round trips per completed
 operation than plain \texttt{io\_uring} at the same setting. This is the batching mechanism
@@ -301,6 +341,41 @@ regardless of queue depth; that plateau is the NVMe device's ceiling, the same o
 \texttt{O\_DIRECT} fix surfaced in Section~V-B, and it is reached by every backend once there is
 enough concurrency to reach it, not a property of any one backend's design.
 
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=\linewidth,
+    height=0.62\linewidth,
+    xmode=log,
+    log basis x=2,
+    xtick={1,2,4,8},
+    xticklabels={1,2,4,8},
+    xlabel={threads},
+    ylabel={IOPS (thousands)},
+    ymin=0,
+    grid=major,
+    legend style={font=\scriptsize, at={(0.5,-0.35)}, anchor=north, legend columns=2},
+]
+\addplot[color=cLibaio, mark=*, thick] coordinates {(1,160.7)(2,197.2)(4,201.2)(8,205.9)};
+\addlegendentry{libaio}
+\addplot[color=cPlainUring, mark=square*, dashed, thick]
+    coordinates {(1,69.3)(2,140.8)(4,198.6)(8,200.3)};
+\addlegendentry{plain io\_uring}
+\addplot[color=cSqpollIndep, mark=triangle*, dotted, thick]
+    coordinates {(1,69.4)(2,142.1)(4,198.3)(8,202.2)};
+\addlegendentry{SqpollEngine (indep.)}
+\addplot[color=cSqpollShared, mark=diamond*, densely dashdotted, thick]
+    coordinates {(1,79.6)(2,140.7)(4,190.7)(8,191.6)};
+\addlegendentry{SqpollEngine (shared)}
+\end{axis}
+\end{tikzpicture}
+\caption{IOPS versus thread count at queue depth 32, 16 vCPUs (Table~\ref{tab:16vcpu-qd32}).
+\texttt{libaio}'s lead is widest at a single thread; every backend converges near the device
+ceiling by 4 threads.}
+\label{fig:iops-16vcpu}
+\end{figure}
+
 \begin{table}[t]
 \centering
 \caption{4 threads, queue depth 128: p99 latency (ms), 4 vCPUs vs.\ 16 vCPUs.}
@@ -323,6 +398,34 @@ compares the same 4-thread, queue-depth-128 configuration across both machine si
 40.4\,ms), while \texttt{libaio}'s stayed close to unchanged (14.3\,ms to 15.1\,ms). More
 available cores did not reduce the time a completion waits before it is harvested; if anything,
 it increased it for both \texttt{io\_uring}-based paths.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    ybar,
+    width=\linewidth,
+    height=0.62\linewidth,
+    symbolic x coords={libaio,plain io\_uring,SqpollEngine},
+    xtick=data,
+    x tick label style={font=\scriptsize},
+    ylabel={p99 latency (ms)},
+    ymin=0,
+    bar width=11pt,
+    enlarge x limits=0.25,
+    legend style={font=\scriptsize, at={(0.5,-0.35)}, anchor=north, legend columns=2},
+]
+\addplot[fill=cBox4] coordinates {(libaio,14.3)(plain io\_uring,15.0)(SqpollEngine,23.5)};
+\addlegendentry{4 vCPU box}
+\addplot[fill=cBox16] coordinates {(libaio,15.1)(plain io\_uring,40.4)(SqpollEngine,47.6)};
+\addlegendentry{16 vCPU box}
+\end{axis}
+\end{tikzpicture}
+\caption{p99 latency at 4 threads, queue depth 128, 4-vCPU versus 16-vCPU box
+(Table~\ref{tab:tail-compare}). \texttt{libaio}'s tail barely moves; both \texttt{io\_uring}-based
+backends get worse on the wider machine.}
+\label{fig:tail-compare}
+\end{figure}
 
 \section{Discussion}
 
