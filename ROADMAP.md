@@ -219,6 +219,32 @@ implemented here, or something this suite hasn't isolated yet (poller idle/backo
 untried). Full results: `benchmarks/iops_throughput_benchmark.cpp` on
 `widen-pipelined-thread-sweep`, raw JSON not checked in.
 
+### `sq_thread_idle` is inert here
+
+`RINGIO_SQ_THREAD_IDLE_MS` sweeps the poller's idle window without a rebuild (unset reproduces the
+1000ms the published matrix used). Swept over 1/10/100/1000/10000ms on a fresh `n2-standard-16`
+with local NVMe, at 4 threads and QD 128 and 1, 7 repetitions, `libaio` in every round as a drift
+control:
+
+| idle (ms) | indep p99 (ms) | shared p99 (ms) | shared calls/op | libaio p99 (ms) |
+|---|---|---|---|---|
+| 1 | 35.6 | 27.9 | 0.961 | 12.7 |
+| 10 | 24.5 | 30.3 | 0.960 | 13.5 |
+| 100 | 27.9 | 29.4 | 0.962 | 13.2 |
+| 1000 | 24.3 | 39.5 | 0.959 | 13.3 |
+| 10000 | 22.2 | 40.4 | 0.959 | 12.4 |
+
+Nothing moves. Shared-poller IOPS holds 190.8-191.5K across the whole range, independent-ring
+197.6-198.7K. The p99 column's 22-40ms spread is inside its own 3-27% per-point CV and isn't
+monotonic; `libaio` stays at 12.4-13.5ms, so the device wasn't drifting between rounds.
+
+`calls_per_op` is the one that settles it: it doesn't move either (0.959-0.962 shared, across a
+10^4 range of the parameter), and at QD 1 it's exactly 1.000 shared / 4.000 independent at every
+setting. A shorter idle window would mean more poller sleeps and so more kernel entries per op.
+There are none, so the poller never times out here at all -- the SQ is never empty for as long as
+1ms. That removes poller-idle tuning from the open candidates; completion-side backoff is what's
+left. Raw JSON not checked in.
+
 ## Phase 6 — Paper Writing & Publication
 
 - [ ] Manuscript: methodology, kernel-bypass design, empirical evaluation
