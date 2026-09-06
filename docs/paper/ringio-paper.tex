@@ -7,6 +7,7 @@
 \usepackage{xcolor}
 \usepackage[hidelinks]{hyperref}
 \usepackage{cite}
+\usepackage{orcidlink}
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.18}
 
@@ -25,8 +26,11 @@
 \title{SQPOLL \texttt{io\_uring} Against a Device-Saturated Cloud NVMe SSD:\\An Empirical Study}
 
 \author{
-  \IEEEauthorblockN{Parth}
-  \IEEEauthorblockA{\texttt{sinhaparth555@gmail.com}}
+  \IEEEauthorblockN{Parth Kumar Sinha\,\orcidlink{0009-0002-3120-9301}}
+  \IEEEauthorblockA{Independent Researcher\\
+  Oxford, United Kingdom\\
+  \texttt{sinhaparth555@gmail.com}\\
+  ORCID: \url{https://orcid.org/0009-0002-3120-9301}}
 }
 
 \maketitle
@@ -52,9 +56,12 @@ at high queue depth, at the cost of that added tail latency. Reading this alongs
 studies that do report SQPOLL wins in CPU-bound settings, our results are consistent with a
 resolution neither we nor they test directly: SQPOLL's advantage is conditional on the CPU or
 syscall path being the bottleneck, and it disappears once a saturated device becomes the limit
-first. We report the full methodology, including a page-cache measurement defect that invalidated
-an earlier round of results, and discuss what this suite's data does and does not establish about
-the underlying cause.
+first. A sweep of \texttt{sq\_thread\_idle} across four orders of magnitude leaves throughput, tail
+latency, and kernel entries per operation unchanged, ruling that parameter out as the
+explanation: the poller never reaches its idle timeout under this workload. We report the full
+methodology, including a page-cache measurement defect that invalidated an earlier round of
+results, and discuss what this suite's data does and does not establish about the underlying
+cause.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -234,14 +241,15 @@ deleted immediately after its run.
 
 \subsection{Reproducibility}
 
-Both machine sizes ran the same image, \texttt{ubuntu-2204-lts}, kernel 6.8, with
+The engine, the benchmark harness, and the phase-by-phase record of the runs reported here are
+at \url{https://github.com/sinhaparth5/ringio}. Both machine sizes ran the same image, \texttt{ubuntu-2204-lts}, kernel 6.8, with
 \texttt{liburing} 2.1 as packaged by that image's \texttt{apt} repository.
 \texttt{SqpollEngine} sets only two \texttt{io\_uring} setup flags,
 \texttt{IORING\_SETUP\_SQPOLL} and, for the shared-poller variant,
 \texttt{IORING\_SETUP\_ATTACH\_WQ}; \texttt{IORING\_SETUP\_SINGLE\_ISSUER},
 \texttt{IORING\_SETUP\_COOP\_TASKRUN}, and \texttt{IORING\_SETUP\_DEFER\_TASKRUN} are not set
-anywhere in this codebase. \texttt{sq\_thread\_idle} is 1000\,ms everywhere in this study; we did
-not sweep it. Neither the SQPOLL kernel thread nor any application thread was pinned to a
+anywhere in this codebase. \texttt{sq\_thread\_idle} is 1000\,ms throughout the main matrix, and swept
+separately in Section~V-D. Neither the SQPOLL kernel thread nor any application thread was pinned to a
 specific core. NVMe queue count and IOMMU configuration on the underlying GCE Local SSD device
 were not recorded and are not user-controllable on this instance type as far as we are aware.
 
@@ -294,7 +302,7 @@ Plain \texttt{io\_uring} & 1.3--4.3 & 15.0 \\
     width=\linewidth,
     height=0.6\linewidth,
     symbolic x coords={libaio,plain io\_uring,SqpollEngine},
-    xtick=data,
+    xtick={libaio,plain io\_uring,SqpollEngine},
     x tick label style={font=\scriptsize},
     ylabel={calls per op},
     ymin=0,
@@ -303,9 +311,9 @@ Plain \texttt{io\_uring} & 1.3--4.3 & 15.0 \\
     every node near coord/.append style={font=\scriptsize},
     enlarge x limits=0.3,
 ]
-\addplot[fill=cLibaio] coordinates {(libaio,2.8)};
-\addplot[fill=cPlainUring] coordinates {(plain io\_uring,2.8)};
-\addplot[fill=cSqpollIndep] coordinates {(SqpollEngine,0.2)};
+\addplot[fill=cLibaio, bar shift=0pt] coordinates {(libaio,2.8)};
+\addplot[fill=cPlainUring, bar shift=0pt] coordinates {(plain io\_uring,2.8)};
+\addplot[fill=cSqpollIndep, bar shift=0pt] coordinates {(SqpollEngine,0.2)};
 \end{axis}
 \end{tikzpicture}
 \caption{Round trips per completed operation at 4 threads, queue depth 128. Bars for
@@ -407,7 +415,8 @@ ceiling by 4 threads.}
 
 \begin{table}[t]
 \centering
-\caption{4 threads, queue depth 128: p99 latency (ms), 4 vCPUs vs.\ 16 vCPUs.}
+\caption{4 threads, queue depth 128: p99 latency (ms), 4 vCPUs vs.\ 16 vCPUs.
+\textsuperscript{a}independent-ring variant; \textsuperscript{b}shared-poller variant.}
 \label{tab:tail-compare}
 \begin{tabular}{lrr}
 \toprule
@@ -415,7 +424,7 @@ Backend & 4 vCPU box & 16 vCPU box \\
 \midrule
 \texttt{libaio} & 14.3 & 15.1 \\
 Plain \texttt{io\_uring} & 15.0 & 40.4 \\
-SqpollEngine (shared poller) & 23.5 & 47.6 \\
+SqpollEngine & 23.5\textsuperscript{a} & 47.6\textsuperscript{b} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -456,6 +465,57 @@ backends get worse on the wider machine.}
 \label{fig:tail-compare}
 \end{figure}
 
+\subsection{sq\_thread\_idle sensitivity}
+
+The one SQPOLL parameter this study had left fixed is \texttt{sq\_thread\_idle}, the window the
+kernel poller spins with no work before sleeping. A poller that sleeps costs a wake-up syscall on
+the next submission, so an idle window mistuned for the workload is a plausible source of both
+lost throughput and added latency. We swept it across four orders of magnitude, 1\,ms to
+10{,}000\,ms, on a second \texttt{n2-standard-16} with Local SSD, holding everything else at the
+configuration of Table~\ref{tab:tail-compare} (4 threads, queue depth 128) and adding queue depth
+1, where a shallow pipeline gives the poller the most opportunity to time out. Each point is the
+median of 7 repetitions; \texttt{libaio}, which the parameter cannot affect, runs in every round
+as a drift control.
+
+\begin{table}[t]
+\centering
+\caption{\texttt{sq\_thread\_idle} sweep at 4 threads, queue depth 128, 16 vCPUs: p99 latency
+(ms), shared-poller round trips per operation, and the \texttt{libaio} drift control. Medians of
+7 repetitions.}
+\label{tab:idle-sweep}
+\begin{tabular}{rrrrr}
+\toprule
+& \multicolumn{2}{c}{SQPOLL p99 (ms)} & shared & \texttt{libaio} \\
+\cmidrule(lr){2-3}
+idle (ms) & indep. & shared & \texttt{calls\_per\_op} & p99 (ms) \\
+\midrule
+1      & 35.6 & 27.9 & 0.961 & 12.7 \\
+10     & 24.5 & 30.3 & 0.960 & 13.5 \\
+100    & 27.9 & 29.4 & 0.962 & 13.2 \\
+1000   & 24.3 & 39.5 & 0.959 & 13.3 \\
+10000  & 22.2 & 40.4 & 0.959 & 12.4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The parameter is inert at every operating point we measured. Throughput does not move: the
+shared-poller backend holds 190.8--191.5K IOPS across the whole sweep, a 0.4\% spread, and the
+independent-ring backend 197.6--198.7K. The p99 column moves more, 22--40\,ms, but its own
+per-point coefficient of variation across repetitions runs 3--27\%, so that spread is inside the
+run-to-run noise rather than a trend, and it is not monotonic in the parameter; the
+\texttt{libaio} control sits at 12.4--13.5\,ms throughout, confirming the device itself was not
+drifting between rounds.
+
+\texttt{calls\_per\_op} is what makes this a mechanism rather than a null measurement. If the
+poller were sleeping and being woken, the kernel entries per operation would rise as the idle
+window shortened, since a shorter window means more sleeps. It does not move at all: 0.959--0.962
+for the shared poller across a $10^4$ range of the parameter, and at queue depth 1, where the
+pipeline is shallowest, exactly 1.000 for the shared poller and 4.000 for the independent-ring
+variant at every setting tested, with p99 flat at 0.14--0.15\,ms. The poller never times out in
+this workload even when given a 1\,ms window, because the submission queue is never empty for
+that long. A parameter whose effect is gated on an event that does not occur cannot explain the
+tail latency, and we accordingly withdraw it as a candidate.
+
 \section{Discussion}
 
 The open question from Section~V-B is answered in the negative: SQPOLL's IOPS shortfall against
@@ -472,12 +532,15 @@ cache lines on the completion ring more as more cores are involved. This is a pl
 mechanism, consistent with the tail-latency data in Table~\ref{tab:tail-compare}, but this suite
 did not instrument cache-coherence traffic, memory-controller counters, or per-core cycle
 accounting, so we report it as a hypothesis this data is consistent with, not as a confirmed
-cause. A second, unexplored candidate is that the fixed \texttt{sq\_thread\_idle} and
-completion-side backoff parameters used throughout this study were tuned, informally, against
-the 4-vCPU box and never retuned for 16; poller-idle and backoff tuning specific to the wider
-box is the only avenue in this investigation's plan that remains untried.
+cause. A second candidate was that the SQPOLL tuning constants used throughout this study, fixed
+informally against the 4-vCPU box and never retuned for 16, were simply wrong for the wider
+machine. The sweep in Section~V-D closes half of that: \texttt{sq\_thread\_idle} does not affect
+throughput, tail latency, or kernel entries per operation anywhere in the range tested, because
+the poller never reaches its idle timeout under this workload at any of the tested windows. The
+completion-side backoff constants (Section~IV-D) remain unswept, and are the one tuning avenue
+still open.
 
-We do not treat either candidate as established. The honest summary of what this suite's data
+We do not treat the contention hypothesis as established. The honest summary of what this suite's data
 supports is: SQPOLL trades throughput and tail latency for a large reduction in kernel entries
 per operation, and that trade does not improve, and by one measure gets worse, on a machine with
 more spare cores.
@@ -499,8 +562,9 @@ its own best-practice buffer handling (\texttt{SqpollEngine}'s fixed, pre-regist
 against the baselines' aligned heap memory), which is the intended comparison but is not an
 identical-conditions comparison in the buffer-handling dimension. The discussion in Section~VI is
 explicitly not settled by this data; the cross-core contention hypothesis has not been tested
-with hardware performance counters, and the fixed \texttt{sq\_thread\_idle} and completion-side
-backoff constants (Section~IV-D) were not swept. Finally, this study compares only SQPOLL, plain
+with hardware performance counters, and the completion-side backoff constants
+(Section~IV-D) were not swept; \texttt{sq\_thread\_idle} was (Section~V-D), and the sweep in
+that section was run at 4 threads and queue depths 1 and 128 only, not across the full matrix. Finally, this study compares only SQPOLL, plain
 \texttt{io\_uring}, \texttt{libaio}, and POSIX; it does not measure
 \texttt{IORING\_SETUP\_IOPOLL} (completion-side polling against a driver configured for it),
 NVMe passthrough via \texttt{IORING\_OP\_URING\_CMD}, or SPDK, all of which target the same
@@ -556,9 +620,25 @@ against Didona et al.~\cite{didona2022} and Jasny et al.~\cite{jasny2025}, who r
 winning in CPU-bound settings this study's device-bound one does not reach, points at a
 resolution this paper does not test directly: SQPOLL's value is conditional on where the
 bottleneck sits, not a fixed property of the mechanism. The underlying mechanism for the
-tail-latency growth remains open, and this study does not compare against
+tail-latency growth remains open, though a sweep of \texttt{sq\_thread\_idle} excludes the
+poller's idle window as the cause, and this study does not compare against
 \texttt{IORING\_SETUP\_IOPOLL}, NVMe passthrough, or SPDK; this paper reports what was measured
 against the four interfaces it did test and separates that plainly from what it did not.
+
+\section*{Declarations}
+
+\textbf{Data availability.} The engine, the benchmark harness, and the phase-by-phase record of
+every run reported here, including the configurations behind each table, are at
+\url{https://github.com/sinhaparth5/ringio}. Raw Google Benchmark JSON output is not archived;
+the harness regenerates it from the commands given in Section~IV.
+
+\textbf{Funding.} This work received no external funding. Cloud instances were self-funded.
+
+\textbf{Conflicts of interest.} The author declares no conflict of interest.
+
+\textbf{Use of AI tools.} Claude Code was used for the benchmark harness implementation, run
+orchestration, and manuscript preparation. The author verified all reported measurements and
+takes responsibility for the content.
 
 \begin{thebibliography}{9}
 
