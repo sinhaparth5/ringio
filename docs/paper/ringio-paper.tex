@@ -625,6 +625,21 @@ poller's idle window as the cause, and this study does not compare against
 \texttt{IORING\_SETUP\_IOPOLL}, NVMe passthrough, or SPDK; this paper reports what was measured
 against the four interfaces it did test and separates that plainly from what it did not.
 
+\section*{Declarations}
+
+\textbf{Data availability.} The engine, the benchmark harness, and the phase-by-phase record of
+every run reported here, including the configurations behind each table, are at
+\url{https://github.com/sinhaparth5/ringio}. Raw Google Benchmark JSON output is not archived;
+the harness regenerates it from the commands given in Section~IV.
+
+\textbf{Funding.} This work received no external funding. Cloud instances were self-funded.
+
+\textbf{Conflicts of interest.} The author declares no conflict of interest.
+
+\textbf{Use of AI tools.} Claude Code was used for the benchmark harness implementation, run
+orchestration, and manuscript preparation. The author verified all reported measurements and
+takes responsibility for the content.
+
 \begin{thebibliography}{9}
 
 \bibitem{arrakis}
