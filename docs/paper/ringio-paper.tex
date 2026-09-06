@@ -7,6 +7,7 @@
 \usepackage{xcolor}
 \usepackage[hidelinks]{hyperref}
 \usepackage{cite}
+\usepackage{orcidlink}
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.18}
 
@@ -25,8 +26,11 @@
 \title{SQPOLL \texttt{io\_uring} Against a Device-Saturated Cloud NVMe SSD:\\An Empirical Study}
 
 \author{
-  \IEEEauthorblockN{Parth}
-  \IEEEauthorblockA{\texttt{sinhaparth555@gmail.com}}
+  \IEEEauthorblockN{Parth Kumar Sinha\,\orcidlink{0009-0002-3120-9301}}
+  \IEEEauthorblockA{Independent Researcher\\
+  Oxford, United Kingdom\\
+  \texttt{sinhaparth555@gmail.com}\\
+  ORCID: \url{https://orcid.org/0009-0002-3120-9301}}
 }
 
 \maketitle
@@ -234,7 +238,8 @@ deleted immediately after its run.
 
 \subsection{Reproducibility}
 
-Both machine sizes ran the same image, \texttt{ubuntu-2204-lts}, kernel 6.8, with
+The engine, the benchmark harness, and the phase-by-phase record of the runs reported here are
+at \url{https://github.com/sinhaparth5/ringio}. Both machine sizes ran the same image, \texttt{ubuntu-2204-lts}, kernel 6.8, with
 \texttt{liburing} 2.1 as packaged by that image's \texttt{apt} repository.
 \texttt{SqpollEngine} sets only two \texttt{io\_uring} setup flags,
 \texttt{IORING\_SETUP\_SQPOLL} and, for the shared-poller variant,
@@ -294,7 +299,7 @@ Plain \texttt{io\_uring} & 1.3--4.3 & 15.0 \\
     width=\linewidth,
     height=0.6\linewidth,
     symbolic x coords={libaio,plain io\_uring,SqpollEngine},
-    xtick=data,
+    xtick={libaio,plain io\_uring,SqpollEngine},
     x tick label style={font=\scriptsize},
     ylabel={calls per op},
     ymin=0,
@@ -303,9 +308,9 @@ Plain \texttt{io\_uring} & 1.3--4.3 & 15.0 \\
     every node near coord/.append style={font=\scriptsize},
     enlarge x limits=0.3,
 ]
-\addplot[fill=cLibaio] coordinates {(libaio,2.8)};
-\addplot[fill=cPlainUring] coordinates {(plain io\_uring,2.8)};
-\addplot[fill=cSqpollIndep] coordinates {(SqpollEngine,0.2)};
+\addplot[fill=cLibaio, bar shift=0pt] coordinates {(libaio,2.8)};
+\addplot[fill=cPlainUring, bar shift=0pt] coordinates {(plain io\_uring,2.8)};
+\addplot[fill=cSqpollIndep, bar shift=0pt] coordinates {(SqpollEngine,0.2)};
 \end{axis}
 \end{tikzpicture}
 \caption{Round trips per completed operation at 4 threads, queue depth 128. Bars for
@@ -407,7 +412,8 @@ ceiling by 4 threads.}
 
 \begin{table}[t]
 \centering
-\caption{4 threads, queue depth 128: p99 latency (ms), 4 vCPUs vs.\ 16 vCPUs.}
+\caption{4 threads, queue depth 128: p99 latency (ms), 4 vCPUs vs.\ 16 vCPUs.
+\textsuperscript{a}independent-ring variant; \textsuperscript{b}shared-poller variant.}
 \label{tab:tail-compare}
 \begin{tabular}{lrr}
 \toprule
@@ -415,7 +421,7 @@ Backend & 4 vCPU box & 16 vCPU box \\
 \midrule
 \texttt{libaio} & 14.3 & 15.1 \\
 Plain \texttt{io\_uring} & 15.0 & 40.4 \\
-SqpollEngine (shared poller) & 23.5 & 47.6 \\
+SqpollEngine & 23.5\textsuperscript{a} & 47.6\textsuperscript{b} \\
 \bottomrule
 \end{tabular}
 \end{table}

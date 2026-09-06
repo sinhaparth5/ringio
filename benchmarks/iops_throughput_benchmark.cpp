@@ -127,6 +127,22 @@ constexpr int kPipelinedThreadCounts[] = {1, 2, 4, 8};
 // power-of-two rounding.
 constexpr unsigned kRingEntries = 256;
 
+// sq_thread_idle for every SQPOLL ring this file builds, in milliseconds.
+// Overridable through RINGIO_SQ_THREAD_IDLE_MS so the value can be swept
+// across runs of the same binary without a rebuild -- the paper's tail-latency
+// discussion leaves it as the one untuned SQPOLL knob. Default 1000 matches
+// SqpollEngine's own default, so an unset environment reproduces the
+// originally published matrix.
+unsigned SqThreadIdleMs() {
+  static const unsigned value = [] {
+    const char* env = std::getenv("RINGIO_SQ_THREAD_IDLE_MS");
+    if (env == nullptr) return 1000U;
+    const long parsed = std::strtol(env, nullptr, 10);
+    return parsed > 0 ? static_cast<unsigned>(parsed) : 1000U;
+  }();
+  return value;
+}
+
 std::uint64_t RandomBlockOffset(std::minstd_rand& rng) {
   std::uniform_int_distribution<std::uint64_t> dist(0, kFileBlocks - 1);
   return dist(rng) * kBlockSize;
@@ -525,7 +541,7 @@ void BM_SqpollIops(benchmark::State& state) {
 
   std::optional<ringio::SqpollEngine> engine;
   try {
-    engine.emplace(kRingEntries);
+    engine.emplace(kRingEntries, SqThreadIdleMs());
   } catch (const std::system_error&) {
     state.SkipWithError("SQPOLL io_uring unavailable in this environment");
     return;
@@ -655,7 +671,7 @@ void BM_SqpollSharedPollerIops(benchmark::State& state) {
 
   std::optional<ringio::SqpollEngine> master;
   try {
-    master.emplace(kRingEntries);
+    master.emplace(kRingEntries, SqThreadIdleMs());
   } catch (const std::system_error&) {
     state.SkipWithError("SQPOLL io_uring unavailable in this environment");
     return;
@@ -663,7 +679,7 @@ void BM_SqpollSharedPollerIops(benchmark::State& state) {
   std::vector<std::unique_ptr<ringio::SqpollEngine>> followers;
   followers.reserve(static_cast<std::size_t>(num_threads - 1));
   for (int i = 1; i < num_threads; ++i) {
-    followers.push_back(std::make_unique<ringio::SqpollEngine>(kRingEntries, 1000, &*master));
+    followers.push_back(std::make_unique<ringio::SqpollEngine>(kRingEntries, SqThreadIdleMs(), &*master));
   }
 
   // One BufferPool/ring set per thread, same as every other backend here --
